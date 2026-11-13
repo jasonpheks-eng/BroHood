@@ -1,0 +1,144 @@
+@import "tailwindcss";
+
+@theme {
+  --font-serif: "Playfair Display", serif;
+  --font-sans: "Inter", sans-serif;
+  
+  --color-brand-ivory: #F8F7F3;
+  --color-brand-beige: #D9D2C7;
+  --color-brand-grey: #E5E5E5;
+  --color-brand-black: #1A1815;
+}
+
+@layer base {
+  body {
+    @apply font-sans text-brand-black bg-white antialiased;
+  }
+  
+  h1, h2, h3, h4, h5, h6 {
+    @apply font-serif;
+  }
+}
+
+@custom-variant dark (&:where(.dark, .dark *));
+
+/* Custom animations and utils */
+.font-display {
+  font-family: "Playfair Display", serif;
+}
+
+.font-body {
+  font-family: "Inter", sans-serif;
+}
+
+/* Custom scrollbar for premium feel */
+::-webkit-scrollbar {
+  width: 5px;
+}
+
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #000;
+  border-radius: 10px;
+}
+
+/* Text selection color */
+::selection {
+  background: #000;
+  color: #fff;
+}
+
+/* Hide scrollbar but keep functionality */
+.scrollbar-hide::-webkit-scrollbar {
+  display: none;
+}
+.scrollbar-hide {
+  -ms-overflow-style: none;
+  scrollbar-width: none;
+}
+
+/* Studio Gallery Theme Tokens & GPU Motion Layer */
+:root {
+  --gallery-bg: #141113;
+  --gallery-scrim: rgba(20, 17, 19, 0.86);
+  --gallery-text: #f5efe6;
+  --gallery-accent: #d8a39d;
+}
+
+@keyframes gallery-marquee-fast {
+  0% {
+    transform: translate3d(0, 0, 0);
+  }
+  100% {
+    transform: translate3d(-50%, 0, 0);
+  }
+}
+
+@keyframes gallery-pulse-glow {
+  0%,
+  100% {
+    opacity: 0.92;
+    transform: scale(1);
+  }
+  50% {
+    opacity: 1;
+    transform: scale(1.025);
+  }
+}
+
+@keyframes gallery-float-drift {
+  0%,
+  100% {
+    transform: translate3d(0, 0, 0);
+  }
+  50% {
+    transform: translate3d(0, -6px, 0);
+  }
+}
+
+@keyframes gallery-fade-up {
+  0% {
+    opacity: 0;
+    transform: translate3d(0, 14px, 0);
+  }
+  100% {
+    opacity: 1;
+    transform: translate3d(0, 0, 0);
+  }
+}
+
+.marquee-fast {
+  display: flex;
+  width: max-content;
+  will-change: transform;
+  animation: gallery-marquee-fast 14s linear infinite;
+}
+
+.anim-pulse-glow {
+  will-change: transform, opacity;
+  animation: gallery-pulse-glow 3.2s ease-in-out infinite;
+}
+
+.anim-float-drift {
+  will-change: transform;
+  animation: gallery-float-drift 4.2s ease-in-out infinite;
+}
+
+.anim-fade-up {
+  will-change: transform, opacity;
+  animation: gallery-fade-up 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marquee-fast,
+  .anim-pulse-glow,
+  .anim-float-drift,
+  .anim-fade-up {
+    animation: none !important;
+    transform: none !important;
+  }
+}
+

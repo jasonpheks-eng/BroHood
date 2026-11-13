@@ -1,0 +1,8 @@
+{
+  "name": "The Legacy - Official Merch",
+  "description": "High-end streetwear and editorial fashion brand featuring The Legacy Capsule and exclusive collaborations.",
+  "requestFramePermissions": [],
+  "majorCapabilities": [
+    "MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"
+  ]
+}

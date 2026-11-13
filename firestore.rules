@@ -1,0 +1,87 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // 0. Catch-all Deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    function isValidId(id) {
+      return id is string && id.size() <= 128 && id.matches('^[a-zA-Z0-9_\\-]+$');
+    }
+
+    function isValidCreatorPost(data) {
+      return data.keys().hasAll(['creatorName', 'handle', 'mediaUrl'])
+        && data.keys().hasOnly([
+          'creatorName',
+          'handle',
+          'avatarUrl',
+          'mediaUrl',
+          'isVideo',
+          'socialLink',
+          'caption',
+          'taggedProductIds',
+          'createdAt',
+          'featured'
+        ])
+        && data.creatorName is string && data.creatorName.size() >= 1 && data.creatorName.size() <= 120
+        && data.handle is string && data.handle.size() >= 1 && data.handle.size() <= 120
+        && data.mediaUrl is string && data.mediaUrl.size() >= 1 && data.mediaUrl.size() <= 200000
+        && (!('avatarUrl' in data) || (data.avatarUrl is string && data.avatarUrl.size() <= 200000))
+        && (!('isVideo' in data) || data.isVideo is bool)
+        && (!('socialLink' in data) || (data.socialLink is string && data.socialLink.size() <= 500))
+        && (!('caption' in data) || (data.caption is string && data.caption.size() <= 1000))
+        && (!('taggedProductIds' in data) || (data.taggedProductIds is list && data.taggedProductIds.size() <= 20))
+        && (!('featured' in data) || data.featured is bool)
+        && (!('createdAt' in data) || data.createdAt is timestamp);
+    }
+
+    function isValidStudioGallery(data) {
+      return data.keys().hasAll(['layoutMode', 'textAnimation', 'items'])
+        && data.keys().hasOnly([
+          'layoutMode',
+          'titleLayout',
+          'textAnimation',
+          'kicker',
+          'headerTitle',
+          'headerDescription',
+          'items',
+          'updatedAt'
+        ])
+        && data.layoutMode in ['all', 'compact', 'large', 'minimal']
+        && (!('titleLayout' in data) || data.titleLayout in ['tile-corner', 'centered', 'top-band', 'editorial-serif'])
+        && data.textAnimation in ['marquee', 'pulse', 'float', 'fadeUp', 'none']
+        && (!('kicker' in data) || (data.kicker is string && data.kicker.size() <= 120))
+        && (!('headerTitle' in data) || (data.headerTitle is string && data.headerTitle.size() <= 120))
+        && (!('headerDescription' in data) || (data.headerDescription is string && data.headerDescription.size() <= 500))
+        && data.items is list && data.items.size() <= 50
+        && (data.items.size() == 0 || data.items[0] is map)
+        && (!('updatedAt' in data) || (data.updatedAt is timestamp && data.updatedAt == request.time));
+    }
+
+    // --- Matches ---
+    // Allowing public read and write as the user requested removing the login feature
+    // and having a simple settings button for management.
+
+    match /settings/global {
+      allow read, write: if true;
+    }
+
+    match /studio_gallery/{docId} {
+      allow read: if true;
+      allow create, update: if isValidId(docId) && isValidStudioGallery(request.resource.data);
+      allow delete: if false;
+    }
+
+    match /products/{productId} {
+      allow read, write: if true;
+    }
+
+    match /creators_club/{postId} {
+      allow read: if true;
+      allow create: if isValidId(postId) && isValidCreatorPost(request.resource.data);
+      allow update: if isValidId(postId) && isValidCreatorPost(request.resource.data);
+      allow delete: if isValidId(postId);
+    }
+  }
+}

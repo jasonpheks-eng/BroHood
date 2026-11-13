@@ -1,0 +1,114 @@
+{
+  "entities": {
+    "Settings": {
+      "title": "Site Settings",
+      "description": "Global settings for the merch store including colors, brand name, and headlines.",
+      "type": "object",
+      "properties": {
+        "brandName": { "type": "string", "maxLength": 50 },
+        "primaryColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "backgroundColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "heroHeadline": { "type": "string", "maxLength": 100 },
+        "heroSubtitle": { "type": "string", "maxLength": 100 },
+        "featuredHeadline": { "type": "string", "maxLength": 100 },
+        "editorialHeadline": { "type": "string", "maxLength": 100 },
+        "aboutUsTitle": { "type": "string", "maxLength": 120 },
+        "aboutUsText": { "type": "string", "maxLength": 2000 },
+        "whatsappNumber": { "type": "string", "maxLength": 32 },
+        "socialLinks": { "type": "array", "description": "Customizable social media tags and pasted profile links." },
+        "studioGallery": {
+          "type": "object",
+          "$ref": "#/entities/StudioGallery",
+          "description": "Studio Gallery layout, animation, and bento tile media configuration."
+        },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["brandName", "primaryColor", "backgroundColor"]
+    },
+    "StudioGallery": {
+      "title": "Studio Gallery Config",
+      "description": "Global Studio Gallery presentation and media tile list.",
+      "type": "object",
+      "properties": {
+        "layoutMode": { "type": "string", "enum": ["all", "compact", "large", "minimal"] },
+        "titleLayout": { "type": "string", "enum": ["tile-corner", "centered", "top-band", "editorial-serif"] },
+        "textAnimation": { "type": "string", "enum": ["marquee", "pulse", "float", "fadeUp", "none"] },
+        "kicker": { "type": "string", "maxLength": 120 },
+        "headerTitle": { "type": "string", "maxLength": 120 },
+        "headerDescription": { "type": "string", "maxLength": 500 },
+        "items": { "type": "array" },
+        "updatedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["layoutMode", "textAnimation", "items"]
+    },
+    "StudioGalleryItem": {
+      "title": "Studio Gallery Tile",
+      "description": "Individual photo or looping video tile with positioning and media metadata.",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string", "maxLength": 128 },
+        "title": { "type": "string", "maxLength": 160 },
+        "subtitle": { "type": "string", "maxLength": 160 },
+        "image": { "type": "string", "maxLength": 200000 },
+        "mediaType": { "type": "string", "enum": ["image", "video"] },
+        "mediaMetadata": { "type": "object" },
+        "size": { "type": "string", "enum": ["1x1", "2x1", "1x2", "2x2"] },
+        "textPosition": {
+          "type": "string",
+          "enum": ["top-left", "top-center", "top-right", "bottom-left", "bottom-center", "bottom-right"]
+        }
+      },
+      "required": ["id", "mediaType", "size", "textPosition"]
+    },
+    "Product": {
+      "title": "Product",
+      "description": "A merch item available for purchase.",
+      "type": "object",
+      "properties": {
+        "name": { "type": "string", "maxLength": 100 },
+        "category": { "type": "string", "maxLength": 50 },
+        "price": { "type": "number" },
+        "imageColor": { "type": "string", "pattern": "^#[0-9A-Fa-f]{6}$" },
+        "collection": { "type": "string", "enum": ["legacy", "featured"] },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["name", "category", "price", "imageColor", "collection"]
+    },
+    "CreatorPost": {
+      "title": "Creator Post",
+      "description": "A community member or model post wearing store merchandise.",
+      "type": "object",
+      "properties": {
+        "creatorName": { "type": "string", "maxLength": 120 },
+        "handle": { "type": "string", "maxLength": 120 },
+        "avatarUrl": { "type": "string", "maxLength": 200000 },
+        "mediaUrl": { "type": "string", "maxLength": 200000 },
+        "isVideo": { "type": "boolean" },
+        "socialLink": { "type": "string", "maxLength": 500 },
+        "caption": { "type": "string", "maxLength": 1000 },
+        "taggedProductIds": { "type": "array" },
+        "featured": { "type": "boolean" },
+        "createdAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["creatorName", "handle", "mediaUrl"]
+    }
+  },
+  "firestore": {
+    "settings/global": {
+      "schema": "Settings",
+      "description": "Singleton document for site-wide settings."
+    },
+    "studio_gallery/{docId}": {
+      "schema": "StudioGallery",
+      "description": "Collection storing serialized Studio Gallery layout, animations, and bento media tiles (doc ID 'config')."
+    },
+    "products/{productId}": {
+      "schema": "Product",
+      "description": "Collection of all merch products."
+    },
+    "creators_club/{postId}": {
+      "schema": "CreatorPost",
+      "description": "Collection of Creators Club community photos and video clips."
+    }
+  }
+}
