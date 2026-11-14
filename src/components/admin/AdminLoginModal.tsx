@@ -19,7 +19,7 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.trim() === 'Brohod1234') {
+    if (password.trim() === 'bro4life') {
       try {
         sessionStorage.setItem('brotherhood_admin_unlocked', 'true');
       } catch {}
