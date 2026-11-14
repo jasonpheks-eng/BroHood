@@ -34,6 +34,7 @@ import { formatPrice, getDefaultSocialLinks, formatWhatsAppDigits } from '../../
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
+import { Helmet } from '../common/Helmet';
 
 interface AdminPanelProps {
   products: Product[];
@@ -349,6 +350,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   return (
     <div className="w-full bg-[#FAFAFA] text-black min-h-screen py-6 md:py-10 relative overflow-x-hidden">
+      <Helmet
+        title={`Admin Console | ${settings.brandName || 'BROTHERHOOD'} Portal`}
+        description="Secure catalog management, lookbook media, and storefront configuration console."
+        noIndex={true}
+      />
       {/* In-app Toast Banner */}
       {toastMessage && (
         <div className="fixed bottom-4 right-4 left-4 sm:left-auto z-[150] bg-black text-white px-4 sm:px-5 py-3 text-[11px] sm:text-xs font-black uppercase tracking-[0.18em] shadow-2xl flex items-center gap-3 border border-zinc-700 animate-in slide-in-from-bottom-3 duration-200">

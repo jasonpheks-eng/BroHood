@@ -2,6 +2,7 @@ import React, { useState, useMemo } from 'react';
 import { Search, SlidersHorizontal, ArrowLeft } from 'lucide-react';
 import { Product, Settings } from '../../types';
 import { StoreProductCard } from '../common/StoreProductCard';
+import { Helmet } from '../common/Helmet';
 
 interface ShopLayoutProps {
   products: Product[];
@@ -69,6 +70,19 @@ export const ShopLayout: React.FC<ShopLayoutProps> = ({
 
   return (
     <div className="w-full bg-white text-black min-h-screen py-10">
+      <Helmet
+        title={`Shop All Garments | ${settings.brandName || 'BROTHERHOOD'} Catalog`}
+        description={`Explore the full catalog of ${filteredProducts.length} streetwear garments, hoodies, and accessories in Malawi Kwacha (MK).`}
+        ogType="website"
+        ogImage={settings.heroImageUrl || settings.logoUrl || '/assets/aistudio/BRO_5917966d.png'}
+        structuredData={{
+          '@context': 'https://schema.org',
+          '@type': 'CollectionPage',
+          name: `All Garments – ${settings.brandName || 'BROTHERHOOD'}`,
+          description: 'Browse the complete fashion catalog and limited edition drops.',
+          numberOfItems: filteredProducts.length,
+        }}
+      />
       <div className="max-w-[1600px] mx-auto px-6 lg:px-12">
         {/* Navigation & Breadcrumb */}
         <div className="flex items-center justify-between mb-8 pb-4 border-b border-zinc-200">

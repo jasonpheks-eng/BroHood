@@ -3,6 +3,7 @@ import { X, ChevronDown, ChevronUp, ShoppingBag, Check, ShieldCheck, Truck, Refr
 import { Product, ProductVariant } from '../../types';
 import { ResolvedImage } from '../common/ResolvedMedia';
 import { formatPrice } from '../../utils';
+import { Helmet } from '../common/Helmet';
 
 interface ProductDetailModalProps {
   product: Product | null;
@@ -81,6 +82,25 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
 
   return (
     <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 md:p-8 bg-black/75 backdrop-blur-sm animate-in fade-in duration-200">
+      <Helmet
+        title={`${product.name} | Official Brotherhood Garment`}
+        description={`${product.description || product.name} - Available now for ${formatPrice(product.price)}.`}
+        ogType="product"
+        ogImage={product.imageUrl}
+        structuredData={{
+          '@context': 'https://schema.org',
+          '@type': 'Product',
+          name: product.name,
+          description: product.description,
+          image: product.imageUrl,
+          offers: {
+            '@type': 'Offer',
+            price: product.price,
+            priceCurrency: 'MWK',
+            availability: isOutOfStock ? 'https://schema.org/OutOfStock' : 'https://schema.org/InStock',
+          },
+        }}
+      />
       <div
         className="relative w-full max-w-5xl max-h-[92vh] bg-white border border-zinc-200 shadow-2xl overflow-y-auto flex flex-col md:flex-row text-black rounded-none"
         onClick={(e) => e.stopPropagation()}

@@ -5,6 +5,7 @@ import { CreatorsClubSection } from '../creators/CreatorsClubSection';
 import { ResolvedImage } from '../common/ResolvedMedia';
 import { StudioGallery } from '../gallery/StudioGallery';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
+import { Helmet } from '../common/Helmet';
 
 interface StorefrontProps {
   settings: Settings;
@@ -32,6 +33,24 @@ export const Storefront: React.FC<StorefrontProps> = ({
 
   return (
     <div className="w-full">
+      <Helmet
+        title={`${settings.brandName || 'BROTHERHOOD'} | Official Streetwear & Editorial Merch`}
+        description={
+          settings.aboutUsText
+            ? settings.aboutUsText.slice(0, 155)
+            : `Shop exclusive heavyweight silhouettes, streetwear capsules, and community creator collaborations from ${settings.brandName || 'BROTHERHOOD'}.`
+        }
+        ogType="website"
+        ogImage={settings.heroImageUrl || settings.logoUrl || '/assets/aistudio/BRO_5917966d.png'}
+        structuredData={{
+          '@context': 'https://schema.org',
+          '@type': 'ClothingStore',
+          name: settings.brandName || 'BROTHERHOOD',
+          description: 'Official streetwear, heavyweight garments, and limited collections.',
+          currenciesAccepted: 'MWK',
+          priceRange: 'MK',
+        }}
+      />
 
       {/* 2. Legacy Capsule Section */}
       <section
@@ -115,7 +134,8 @@ export const Storefront: React.FC<StorefrontProps> = ({
 
       {/* 5. About Us Section */}
       <section
-        className="relative w-full bg-[#121212] text-white py-16 md:py-20 px-6 lg:px-12 overflow-hidden border-t border-zinc-900"
+        className="relative w-full bg-black text-white py-16 md:py-20 px-6 lg:px-12 overflow-hidden border-t border-zinc-900"
+        style={{ backgroundColor: '#000000' }}
         id="editorial"
       >
         {settings.editorialImageUrl && (

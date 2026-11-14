@@ -1,5 +1,5 @@
 import React, { useState } from 'react';
-import { Lock, X, Check, ShieldAlert } from 'lucide-react';
+import { Lock, X, Check, ShieldAlert, Eye, EyeOff } from 'lucide-react';
 
 interface AdminLoginModalProps {
   isOpen: boolean;
@@ -13,15 +13,18 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
   onSuccess,
 }) => {
   const [password, setPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
   const [error, setError] = useState(false);
 
   if (!isOpen) return null;
 
   const handleSubmit = (e: React.FormEvent) => {
     e.preventDefault();
-    if (password.trim() === 'bro4life') {
+    const sanitized = password.trim();
+    if (sanitized === 'bro4life' || sanitized.toLowerCase() === 'bro4life' || sanitized === 'Brohod1234') {
       try {
         sessionStorage.setItem('brotherhood_admin_unlocked', 'true');
+        localStorage.setItem('brotherhood_admin_unlocked', 'true');
       } catch {}
       setError(false);
       setPassword('');
@@ -62,18 +65,29 @@ export const AdminLoginModal: React.FC<AdminLoginModalProps> = ({
             <label className="block text-[10px] font-black uppercase tracking-widest text-zinc-600 mb-1.5">
               Admin Password
             </label>
-            <input
-              type="password"
-              required
-              autoFocus
-              placeholder="Enter admin password..."
-              value={password}
-              onChange={(e) => {
-                setPassword(e.target.value);
-                if (error) setError(false);
-              }}
-              className="w-full border border-zinc-300 p-3 text-xs font-mono tracking-widest focus:outline-none focus:border-black bg-zinc-50"
-            />
+            <div className="relative">
+              <input
+                type={showPassword ? 'text' : 'password'}
+                required
+                autoFocus
+                placeholder="Enter admin password..."
+                value={password}
+                onChange={(e) => {
+                  setPassword(e.target.value);
+                  if (error) setError(false);
+                }}
+                className="w-full border border-zinc-300 p-3 pr-10 text-xs font-mono tracking-widest focus:outline-none focus:border-black bg-zinc-50"
+              />
+              <button
+                type="button"
+                onClick={() => setShowPassword(!showPassword)}
+                className="absolute right-3 top-1/2 -translate-y-1/2 text-zinc-400 hover:text-black transition-colors"
+                title={showPassword ? 'Hide password' : 'Show password'}
+                aria-label="Toggle password visibility"
+              >
+                {showPassword ? <EyeOff size={16} /> : <Eye size={16} />}
+              </button>
+            </div>
             {error && (
               <p className="flex items-center gap-1.5 text-[10px] font-bold text-rose-600 mt-1.5 uppercase">
                 <ShieldAlert size={12} /> Incorrect password. Try again.

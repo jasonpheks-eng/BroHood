@@ -574,7 +574,9 @@ export default function App() {
         activeView={view}
         onChangeView={(nextView) => {
           if (nextView === 'admin') {
-            const unlocked = sessionStorage.getItem('brotherhood_admin_unlocked') === 'true';
+            const unlocked =
+              sessionStorage.getItem('brotherhood_admin_unlocked') === 'true' ||
+              localStorage.getItem('brotherhood_admin_unlocked') === 'true';
             if (!unlocked) {
               setIsAdminLoginOpen(true);
               return;
@@ -592,7 +594,8 @@ export default function App() {
       {/* Main View Router */}
       <main className="flex-grow">
         {view === 'admin' ? (
-          sessionStorage.getItem('brotherhood_admin_unlocked') === 'true' ? (
+          sessionStorage.getItem('brotherhood_admin_unlocked') === 'true' ||
+          localStorage.getItem('brotherhood_admin_unlocked') === 'true' ? (
             <AdminPanel
               products={products}
               settings={settings}
@@ -604,6 +607,7 @@ export default function App() {
               onDeleteCreatorPost={handleDeleteCreatorPost}
               onBackToStore={() => {
                 sessionStorage.removeItem('brotherhood_admin_unlocked');
+                localStorage.removeItem('brotherhood_admin_unlocked');
                 window.history.replaceState(null, '', window.location.pathname + window.location.search);
                 setView('store');
                 window.scrollTo({ top: 0, behavior: 'smooth' });

@@ -63,7 +63,9 @@ export const Navbar: React.FC<NavbarProps> = ({
         onChangeView('store');
         return;
       }
-      const unlocked = sessionStorage.getItem('brotherhood_admin_unlocked') === 'true';
+      const unlocked =
+        sessionStorage.getItem('brotherhood_admin_unlocked') === 'true' ||
+        localStorage.getItem('brotherhood_admin_unlocked') === 'true';
       if (unlocked) {
         onChangeView('admin');
         window.scrollTo({ top: 0, behavior: 'smooth' });
