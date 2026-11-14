@@ -1611,7 +1611,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       onChange={(e) => setFormProduct({ ...formProduct, collection: e.target.value as any })}
                       className="w-full border border-zinc-200 p-2.5 text-xs uppercase font-bold focus:outline-none focus:border-black"
                     >
-                      <option value="legacy">The Legacy Capsule (Main Page)</option>
+                      <option value="legacy">BrotherHood Collection (Main Page)</option>
                       <option value="featured">Featured Collaboration</option>
                     </select>
                   </div>

@@ -52,10 +52,10 @@ export const Storefront: React.FC<StorefrontProps> = ({
         }}
       />
 
-      {/* 2. Legacy Capsule Section */}
+      {/* 2. Collection Section */}
       <section
         className="max-w-[1600px] mx-auto px-6 lg:px-12 py-16 w-full transition-colors duration-300"
-        id="legacy-section"
+        id="collection-section"
         style={{
           backgroundColor: settings.legacySectionBgColor || undefined,
           color: settings.legacySectionTextColor || undefined,

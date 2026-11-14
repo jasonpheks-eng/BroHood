@@ -100,7 +100,7 @@ export const ShopLayout: React.FC<ShopLayoutProps> = ({
         {/* Title Header */}
         <div className="text-center mb-12 space-y-2">
           <p className="text-[10px] font-black uppercase tracking-[0.3em] text-zinc-400">
-            {settings.brandName || 'THE LEGACY'} Catalog
+            {settings.brandName || 'BROTHERHOOD'} Catalog
           </p>
           <h1 className="text-3xl md:text-5xl font-black uppercase tracking-tight">
             Complete Garment Collection

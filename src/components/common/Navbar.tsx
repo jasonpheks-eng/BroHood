@@ -123,14 +123,14 @@ export const Navbar: React.FC<NavbarProps> = ({
               className="w-auto max-w-[240px] object-contain block"
             />
           ) : (
-            <span>{settings.brandName || 'THE LEGACY'}</span>
+            <span>{settings.brandName || 'BROTHERHOOD'}</span>
           )}
         </button>
 
         {/* Zone 2: Navigation Links */}
         <nav className="hidden md:flex items-center gap-8 text-[11px] font-black uppercase tracking-[0.2em] text-zinc-600">
           <button
-            onClick={() => handleNavClick('legacy-section')}
+            onClick={() => handleNavClick('collection-section')}
             className="hover:text-black transition-colors whitespace-nowrap shrink-0 hover:underline underline-offset-8"
           >
             Collection
@@ -198,7 +198,7 @@ export const Navbar: React.FC<NavbarProps> = ({
         <div className="md:hidden border-t border-zinc-200 bg-white px-6 py-6 space-y-4">
           <div className="flex flex-col gap-4 text-xs font-black uppercase tracking-widest text-zinc-700">
             <button
-              onClick={() => handleNavClick('legacy-section')}
+              onClick={() => handleNavClick('collection-section')}
               className="text-left py-2 hover:text-black border-b border-zinc-100"
             >
               Collection

@@ -72,6 +72,12 @@ import { Storefront } from './components/store/Storefront';
 import { ShopLayout } from './components/shop/ShopLayout';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { AdminLoginModal } from './components/admin/AdminLoginModal';
+import {
+  syncProductToSupabase,
+  deleteProductFromSupabase,
+  syncSettingsToSupabase,
+  syncCreatorPostToSupabase,
+} from './supabaseSync';
 
 const DEFAULT_SETTINGS: Settings = {
   brandName: 'BROTHERHOOD',
@@ -84,7 +90,7 @@ const DEFAULT_SETTINGS: Settings = {
   footerImageUrl: '',
   primaryColor: '#1A1815',
   backgroundColor: '#F8F7F3',
-  heroHeadline: 'The Legacy Capsule',
+  heroHeadline: 'BrotherHood Collection',
   heroSubtitle: 'Full-Width Campaign Image / Video',
   featuredHeadline: 'Featured Collaboration',
   editorialHeadline: "Creator's Club Vol. 3",
@@ -461,18 +467,21 @@ export default function App() {
 
   const handleClearCart = () => setCart([]);
 
-  // Admin Firestore Actions
+  // Admin Firestore & Supabase Actions
   const handleSaveProduct = async (product: Product) => {
     const { id, ...data } = product;
     try {
+      let savedId = id;
       if (id) {
         await updateDoc(doc(db, 'products', id), data);
       } else {
-        await addDoc(collection(db, 'products'), {
+        const docRef = await addDoc(collection(db, 'products'), {
           ...data,
           createdAt: serverTimestamp(),
         });
+        savedId = docRef.id;
       }
+      await syncProductToSupabase({ ...product, id: savedId });
     } catch (error) {
       handleFirestoreError(error, id ? OperationType.UPDATE : OperationType.CREATE, id ? `products/${id}` : 'products');
     }
@@ -481,6 +490,7 @@ export default function App() {
   const handleDeleteProduct = async (productId: string) => {
     try {
       await deleteDoc(doc(db, 'products', productId));
+      await deleteProductFromSupabase(productId);
     } catch (error) {
       handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
     }
@@ -507,6 +517,7 @@ export default function App() {
     setSettings((prev) => ({ ...prev, ...cleanSettings }));
     try {
       await setDoc(doc(db, 'settings', 'global'), cleanSettings as any, { merge: true });
+      await syncSettingsToSupabase(cleanSettings as Settings);
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
     }
@@ -516,14 +527,17 @@ export default function App() {
   const handleSaveCreatorPost = async (post: CreatorPost) => {
     const { id, ...data } = post;
     try {
+      let savedId = id;
       if (id) {
         await updateDoc(doc(db, 'creators_club', id), data);
       } else {
-        await addDoc(collection(db, 'creators_club'), {
+        const docRef = await addDoc(collection(db, 'creators_club'), {
           ...data,
           createdAt: serverTimestamp(),
         });
+        savedId = docRef.id;
       }
+      await syncCreatorPostToSupabase({ ...post, id: savedId });
     } catch (error) {
       handleFirestoreError(
         error,
@@ -550,8 +564,11 @@ export default function App() {
 
   if (loading) {
     return (
-      <div className="min-h-screen flex items-center justify-center font-sans uppercase tracking-[0.2em] text-xs text-zinc-400 bg-white">
-        Loading The Legacy Platform...
+      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-white text-black gap-4 p-6">
+        <div className="w-8 h-8 border-2 border-black border-t-transparent animate-spin rounded-full" />
+        <div className="uppercase tracking-[0.25em] text-xs font-black text-zinc-700">
+          Loading BrotherHood...
+        </div>
       </div>
     );
   }
