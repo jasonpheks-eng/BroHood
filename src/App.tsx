@@ -101,6 +101,7 @@ const DEFAULT_SETTINGS: Settings = {
   heroHeight: 'aspect-square md:aspect-[21/9]',
   heroContentAlign: 'items-center justify-center',
   heroOverlayOpacity: 10,
+  heroMediaFit: 'cover',
   heroVideoZoom: 1,
   heroVideoPosition: '50% 50%',
   heroImageZoom: 1,
@@ -737,7 +738,7 @@ export default function App() {
         backgroundColor: settings.backgroundColor || '#F8F7F3',
         color: settings.primaryColor || '#1A1815',
       }}
-      className="min-h-screen flex flex-col font-sans transition-colors duration-300 antialiased"
+      className="min-h-screen w-full max-w-full overflow-x-clip flex flex-col font-sans transition-colors duration-300 antialiased"
     >
       {/* Universal Navigation Bar */}
       <Navbar

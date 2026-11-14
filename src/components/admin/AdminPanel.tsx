@@ -18,6 +18,9 @@ import {
   Link2,
   ClipboardPaste,
   Lock,
+  ArrowUp,
+  ArrowDown,
+  RotateCcw,
 } from 'lucide-react';
 import {
   Product,
@@ -81,6 +84,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [savingProduct, setSavingProduct] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
+  const [uploadingHeroMedia, setUploadingHeroMedia] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const setFormSettings = React.useCallback(
@@ -266,6 +270,54 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast('Photo optimized for cross-device sync');
     }
     return result.url;
+  };
+
+  const applyAndSyncHeroSettings = async (patch: Partial<Settings>, successMsg: string) => {
+    const merged: Settings = {
+      ...settingsRef.current,
+      ...formSettings,
+      ...patch,
+    };
+    if (Array.isArray(merged.heroVideoUrls)) {
+      const usable = merged.heroVideoUrls.filter((u) => Boolean(u && u.trim() && !u.startsWith('idb://')));
+      merged.heroVideoUrls = usable;
+      merged.heroVideoUrl = usable[0] || '/assets/aistudio/brotherhood_hero_loop.mp4';
+    }
+    setRawFormSettings(merged);
+    setIsSettingsDirty(false);
+    await onSaveSettings(merged);
+    lastSavedWhatsappRef.current = (merged.whatsappNumber || '').trim();
+    showToast(successMsg);
+  };
+
+  const handleHeroMultiUpload = async (fileList: FileList | null) => {
+    if (!fileList || fileList.length === 0) return;
+    setUploadingHeroMedia(true);
+    try {
+      const uploadedUrls: string[] = [];
+      for (const file of Array.from(fileList)) {
+        const res = await handleFileUpload(file);
+        if (res) {
+          uploadedUrls.push(res);
+        }
+      }
+      if (uploadedUrls.length > 0) {
+        const current = (formSettings.heroVideoUrls || []).filter((u) => Boolean(u && u.trim()));
+        const nextList = [...current, ...uploadedUrls];
+        await applyAndSyncHeroSettings(
+          {
+            heroVideoUrls: nextList,
+            heroVideoUrl: nextList[0],
+          },
+          `Added & synced ${uploadedUrls.length} hero ${uploadedUrls.length === 1 ? 'item' : 'items'}`
+        );
+      }
+    } catch (err) {
+      console.error('Hero multi-upload failed:', err);
+      showToast('Error uploading hero media.');
+    } finally {
+      setUploadingHeroMedia(false);
+    }
   };
 
   // Submit Product Form
@@ -1158,152 +1210,345 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
-            {/* Hero Media Playlist */}
+            {/* Hero Media Playlist (Videos & Images) */}
             <div className="bg-white p-4 sm:p-6 border border-zinc-200 space-y-6">
-              <div className="flex flex-wrap items-center justify-between gap-2 border-b border-zinc-100 pb-2">
-                <h3 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
-                  <Video size={16} /> Hero Video Playlist
-                </h3>
-                <div className="flex items-center gap-3">
-                  <button
-                    type="button"
-                    onClick={() => {
-                      setFormSettings({
-                        ...formSettings,
-                        heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
-                        heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
-                      });
-                      showToast('Default BrotherHood hero video staged — click Save Settings');
-                    }}
-                    className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black border border-zinc-200 px-2.5 py-1 transition-colors"
-                  >
-                    Use Default Hero Video
-                  </button>
+              <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3 border-b border-zinc-100 pb-3">
+                <div>
+                  <h3 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
+                    <Video size={16} /> Hero Media Playlist (Videos &amp; Images)
+                  </h3>
+                  <p className="text-[11px] text-zinc-500 mt-1">
+                    Upload multiple photos and videos. They auto-cycle together on your landing hero and sync across phones.
+                  </p>
+                </div>
+                <div className="flex flex-wrap items-center gap-2 shrink-0">
+                  <label className="bg-black text-white hover:bg-zinc-800 px-3.5 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center gap-1.5 whitespace-nowrap">
+                    <Upload size={12} /> {uploadingHeroMedia ? 'Uploading...' : 'Upload Photos / Videos'}
+                    <input
+                      type="file"
+                      multiple
+                      accept="image/*,video/*,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+                      className="hidden"
+                      disabled={uploadingHeroMedia}
+                      onChange={async (e) => {
+                        const input = e.currentTarget;
+                        await handleHeroMultiUpload(input.files);
+                        input.value = '';
+                      }}
+                    />
+                  </label>
                   <button
                     type="button"
                     onClick={() => {
                       const current = formSettings.heroVideoUrls || [];
                       setFormSettings({ ...formSettings, heroVideoUrls: [...current, ''] });
                     }}
-                    className="text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:text-black flex items-center gap-1"
+                    className="border border-zinc-200 hover:border-black px-3 py-2 text-[10px] font-black uppercase tracking-widest text-zinc-700 hover:text-black flex items-center gap-1 whitespace-nowrap transition-colors"
                   >
-                    <Plus size={12} /> Add Video Track
+                    <Plus size={12} /> Add Link
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() =>
+                      applyAndSyncHeroSettings(
+                        {
+                          heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
+                          heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+                        },
+                        'Default BrotherHood hero video applied & synced'
+                      )
+                    }
+                    className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black border border-zinc-200 px-2.5 py-2 transition-colors whitespace-nowrap"
+                  >
+                    Reset Default
                   </button>
                 </div>
               </div>
 
-              <div className="space-y-4">
-                {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i) => (
-                  <div key={i} className="p-3 sm:p-3.5 bg-zinc-50 border border-zinc-200 space-y-3">
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-3">
-                      <div className="flex items-center justify-between sm:justify-start gap-3">
-                        <div className="flex items-center gap-3">
-                          <span className="font-mono text-xs text-zinc-400 tabular-nums">0{i + 1}</span>
-                          {/* Image / Media Preview Thumbnail */}
-                          <div className="w-14 h-12 bg-white border border-zinc-300 overflow-hidden shrink-0 flex items-center justify-center">
-                            {url ? (
-                              url.toLowerCase().match(/\.(mp4|webm|mov|m4v)($|\?)/) || url.startsWith('data:video/') ? (
-                                <ResolvedVideo src={url} muted playsInline autoPlay loop className="w-full h-full object-cover" />
+              <div className="space-y-3">
+                {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i, arr) => {
+                  const isImageTrack = Boolean(
+                    url &&
+                      (url.toLowerCase().startsWith('data:image/') ||
+                        /\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/i.test(url))
+                  );
+                  return (
+                    <div key={i} className="p-3 sm:p-3.5 bg-zinc-50 border border-zinc-200 space-y-3">
+                      <div className="flex flex-col sm:flex-row sm:items-center gap-3">
+                        <div className="flex items-center justify-between sm:justify-start gap-3">
+                          <div className="flex items-center gap-3">
+                            <span className="font-mono text-xs text-zinc-500 tabular-nums whitespace-nowrap">
+                              0{i + 1} · {url ? (isImageTrack ? 'Photo' : 'Video') : 'Empty'}
+                            </span>
+                            {/* Image / Video Preview Thumbnail */}
+                            <div className="w-14 h-12 bg-white border border-zinc-300 overflow-hidden shrink-0 flex items-center justify-center">
+                              {url ? (
+                                isImageTrack ? (
+                                  <ResolvedImage src={url} alt={`Hero ${i + 1}`} className="w-full h-full object-cover" />
+                                ) : (
+                                  <ResolvedVideo src={url} muted playsInline autoPlay loop className="w-full h-full object-cover" />
+                                )
                               ) : (
-                                <ResolvedImage src={url} alt={`Track ${i + 1}`} className="w-full h-full object-cover" />
-                              )
-                            ) : (
-                              <span className="text-[9px] text-zinc-500 font-mono">Empty</span>
-                            )}
+                                <span className="text-[9px] text-zinc-400 font-mono">Empty</span>
+                              )}
+                            </div>
+                          </div>
+
+                          <div className="flex items-center gap-1 sm:hidden">
+                            <button
+                              type="button"
+                              disabled={i === 0}
+                              onClick={() => {
+                                const next = [...arr];
+                                [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              }}
+                              className="p-2 text-zinc-500 hover:text-black disabled:opacity-30"
+                              aria-label="Move up"
+                            >
+                              <ArrowUp size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              disabled={i === arr.length - 1}
+                              onClick={() => {
+                                const next = [...arr];
+                                [next[i + 1], next[i]] = [next[i], next[i + 1]];
+                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              }}
+                              className="p-2 text-zinc-500 hover:text-black disabled:opacity-30"
+                              aria-label="Move down"
+                            >
+                              <ArrowDown size={14} />
+                            </button>
+                            <button
+                              type="button"
+                              onClick={() => {
+                                const next = arr.filter((_, idx) => idx !== i);
+                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              }}
+                              className="text-zinc-400 hover:text-rose-600 p-2"
+                              title="Remove media"
+                            >
+                              <Trash2 size={15} />
+                            </button>
                           </div>
                         </div>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = (formSettings.heroVideoUrls || []).filter((_, idx) => idx !== i);
-                            setFormSettings({ ...formSettings, heroVideoUrls: next });
+                        <input
+                          type="text"
+                          value={url}
+                          placeholder="Media URL (MP4 video or JPG/PNG photo link)"
+                          onChange={(e) => {
+                            const next = [...arr];
+                            next[i] = e.target.value;
+                            setFormSettings({
+                              ...formSettings,
+                              heroVideoUrls: next,
+                              ...(i === 0 ? { heroVideoUrl: e.target.value } : {}),
+                            });
                           }}
-                          className="sm:hidden text-zinc-400 hover:text-rose-600 p-2"
-                          title="Remove media"
-                        >
-                          <Trash2 size={15} />
-                        </button>
-                      </div>
+                          className="flex-1 min-w-0 border border-zinc-200 p-2 text-xs font-mono focus:outline-none focus:border-black bg-white"
+                        />
 
-                      <input
-                        type="text"
-                        value={url}
-                        placeholder="Media URL (e.g. video MP4 or image link)"
-                        onChange={(e) => {
-                          const next = [...(formSettings.heroVideoUrls || [])];
-                          next[i] = e.target.value;
-                          setFormSettings({ ...formSettings, heroVideoUrls: next });
-                        }}
-                        className="flex-1 min-w-0 border border-zinc-200 p-2 text-xs font-mono focus:outline-none focus:border-black bg-white"
-                      />
-
-                      <div className="flex items-center gap-2 shrink-0">
-                        <label className="flex-1 sm:flex-initial bg-black text-white hover:bg-zinc-800 px-3 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center justify-center gap-1.5 shrink-0">
-                          <Upload size={12} /> Upload File
-                          <input
-                            type="file"
-                            accept="image/*,video/*,image/jpeg,image/png,image/webp,video/mp4"
-                            className="hidden"
-                            onChange={async (e) => {
-                              const file = e.target.files?.[0];
-                              if (file) {
-                                const res = await handleFileUpload(file);
-                                if (res) {
-                                  const next = [...(formSettings.heroVideoUrls || [])];
-                                  next[i] = res;
-                                  setFormSettings({
-                                    ...formSettings,
-                                    heroVideoUrls: next,
-                                    ...(i === 0 ? { heroVideoUrl: res } : {}),
-                                  });
+                        <div className="flex items-center gap-1.5 shrink-0">
+                          <label className="flex-1 sm:flex-initial bg-black text-white hover:bg-zinc-800 px-3 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap">
+                            <Upload size={12} /> Replace File
+                            <input
+                              type="file"
+                              accept="image/*,video/*,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+                              className="hidden"
+                              onChange={async (e) => {
+                                const file = e.target.files?.[0];
+                                e.currentTarget.value = '';
+                                if (file) {
+                                  const res = await handleFileUpload(file);
+                                  if (res) {
+                                    const next = [...arr];
+                                    next[i] = res;
+                                    await applyAndSyncHeroSettings(
+                                      {
+                                        heroVideoUrls: next,
+                                        heroVideoUrl: next[0] || res,
+                                      },
+                                      'Hero media updated & synced'
+                                    );
+                                  }
                                 }
-                              }
-                            }}
-                          />
-                        </label>
+                              }}
+                            />
+                          </label>
 
-                        <button
-                          type="button"
-                          onClick={() => {
-                            const next = (formSettings.heroVideoUrls || []).filter((_, idx) => idx !== i);
-                            setFormSettings({ ...formSettings, heroVideoUrls: next });
-                          }}
-                          className="hidden sm:inline-flex text-zinc-400 hover:text-rose-600 p-2"
-                          title="Remove media"
-                        >
-                          <Trash2 size={14} />
-                        </button>
+                          <button
+                            type="button"
+                            disabled={i === 0}
+                            onClick={() => {
+                              const next = [...arr];
+                              [next[i - 1], next[i]] = [next[i], next[i - 1]];
+                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                            }}
+                            className="hidden sm:inline-flex p-2 text-zinc-400 hover:text-black disabled:opacity-30"
+                            title="Move earlier"
+                            aria-label="Move earlier"
+                          >
+                            <ArrowUp size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            disabled={i === arr.length - 1}
+                            onClick={() => {
+                              const next = [...arr];
+                              [next[i + 1], next[i]] = [next[i], next[i + 1]];
+                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                            }}
+                            className="hidden sm:inline-flex p-2 text-zinc-400 hover:text-black disabled:opacity-30"
+                            title="Move later"
+                            aria-label="Move later"
+                          >
+                            <ArrowDown size={14} />
+                          </button>
+                          <button
+                            type="button"
+                            onClick={() => {
+                              const next = arr.filter((_, idx) => idx !== i);
+                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                            }}
+                            className="hidden sm:inline-flex text-zinc-400 hover:text-rose-600 p-2"
+                            title="Remove media"
+                          >
+                            <Trash2 size={14} />
+                          </button>
+                        </div>
                       </div>
                     </div>
+                  );
+                })}
+              </div>
 
-                    {/* Direct Zoom Slider on this Track Row */}
-                    <div className="flex flex-col sm:flex-row sm:items-center gap-2 sm:gap-4 pt-2.5 border-t border-zinc-200/80">
-                      <label className="text-[10px] font-black uppercase tracking-widest text-zinc-600 shrink-0">
-                        Zoom Scale: <span className="font-mono text-black font-bold">{(formSettings.heroVideoZoom || formSettings.heroImageZoom || 1).toFixed(1)}x</span>
-                      </label>
-                      <input
-                        type="range"
-                        min="1"
-                        max="4"
-                        step="0.1"
-                        value={formSettings.heroVideoZoom || formSettings.heroImageZoom || 1}
-                        onChange={(e) => {
-                          const z = Number(e.target.value);
-                          setFormSettings({ ...formSettings, heroVideoZoom: z, heroImageZoom: z });
+              {/* Hero Media Fit Mode, Bidirectional Zoom Out/In & Anchor Position */}
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-zinc-100">
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-2">
+                    Hero Frame Fit
+                  </label>
+                  <div className="grid grid-cols-2 gap-1.5 bg-zinc-100 p-1">
+                    <button
+                      type="button"
+                      onClick={() => setFormSettings({ ...formSettings, heroMediaFit: 'contain' })}
+                      className={`py-2 px-3 text-[10px] font-black uppercase tracking-widest transition-colors whitespace-nowrap ${
+                        formSettings.heroMediaFit === 'contain'
+                          ? 'bg-black text-white'
+                          : 'text-zinc-600 hover:text-black'
+                      }`}
+                    >
+                      Fit Whole
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => setFormSettings({ ...formSettings, heroMediaFit: 'cover' })}
+                      className={`py-2 px-3 text-[10px] font-black uppercase tracking-widest transition-colors whitespace-nowrap ${
+                        (formSettings.heroMediaFit || 'cover') === 'cover'
+                          ? 'bg-black text-white'
+                          : 'text-zinc-600 hover:text-black'
+                      }`}
+                    >
+                      Fill Frame
+                    </button>
+                  </div>
+                </div>
+
+                <div>
+                  <div className="flex items-center justify-between gap-2 mb-2">
+                    <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500">
+                      Zoom Out / In:{' '}
+                      <span className="font-mono text-black font-bold tabular-nums">
+                        {(formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1).toFixed(2)}x
+                      </span>
+                    </label>
+                    <div className="flex items-center gap-1">
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = Number(formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1);
+                          const next = Math.max(0.5, Math.round((current - 0.1) * 100) / 100);
+                          setFormSettings({ ...formSettings, heroVideoZoom: next, heroImageZoom: next });
                         }}
-                        className="flex-grow accent-black cursor-pointer h-1.5 bg-zinc-200"
-                      />
-                      <span className="hidden sm:inline text-[9px] font-mono text-zinc-400">1.0x - 4.0x</span>
+                        className="border border-zinc-200 hover:border-black px-2 py-0.5 text-xs font-mono font-bold"
+                        title="Zoom Out"
+                      >
+                        -
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() =>
+                          setFormSettings({ ...formSettings, heroVideoZoom: 1, heroImageZoom: 1 })
+                        }
+                        className="border border-zinc-200 hover:border-black px-2 py-0.5 text-[10px] font-mono font-bold flex items-center gap-1"
+                        title="Reset to 1.00x"
+                      >
+                        <RotateCcw size={10} /> 1x
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => {
+                          const current = Number(formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1);
+                          const next = Math.min(2.5, Math.round((current + 0.1) * 100) / 100);
+                          setFormSettings({ ...formSettings, heroVideoZoom: next, heroImageZoom: next });
+                        }}
+                        className="border border-zinc-200 hover:border-black px-2 py-0.5 text-xs font-mono font-bold"
+                        title="Zoom In"
+                      >
+                        +
+                      </button>
                     </div>
                   </div>
-                ))}
+                  <input
+                    type="range"
+                    min="0.5"
+                    max="2.5"
+                    step="0.05"
+                    value={formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1}
+                    onChange={(e) => {
+                      const z = Number(e.target.value);
+                      setFormSettings({ ...formSettings, heroVideoZoom: z, heroImageZoom: z });
+                    }}
+                    className="w-full accent-black cursor-pointer"
+                  />
+                  <div className="flex justify-between text-[9px] font-mono text-zinc-400 mt-1 tabular-nums">
+                    <span>0.50x (Out)</span>
+                    <span>1.00x</span>
+                    <span>2.50x (In)</span>
+                  </div>
+                </div>
+
+                <div>
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-2">
+                    Focal Alignment ({formSettings.heroVideoPosition || '50% 50%'})
+                  </label>
+                  <select
+                    value={formSettings.heroVideoPosition || formSettings.heroImagePosition || '50% 50%'}
+                    onChange={(e) =>
+                      setFormSettings({
+                        ...formSettings,
+                        heroVideoPosition: e.target.value,
+                        heroImagePosition: e.target.value,
+                      })
+                    }
+                    className="w-full border border-zinc-200 p-2 text-xs uppercase font-bold bg-white"
+                  >
+                    <option value="50% 50%">Center (50% 50%)</option>
+                    <option value="50% 20%">Top (50% 20%)</option>
+                    <option value="50% 80%">Bottom (50% 80%)</option>
+                    <option value="20% 50%">Left (20% 50%)</option>
+                    <option value="80% 50%">Right (80% 50%)</option>
+                  </select>
+                </div>
               </div>
 
               {/* Hero Image Fallback */}
               <div className="pt-4 border-t border-zinc-100">
                 <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
-                  Hero Cover / Fallback Image
+                  Hero Fallback Cover Image (Shown if browser pauses video)
                 </label>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
@@ -1313,18 +1558,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onChange={(e) => setFormSettings({ ...formSettings, heroImageUrl: e.target.value })}
                     className="flex-1 min-w-0 border border-zinc-200 p-2 text-xs font-mono focus:outline-none focus:border-black"
                   />
-                  <label className="bg-zinc-100 hover:bg-zinc-200 px-3 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center justify-center gap-1.5 shrink-0">
-                    <Upload size={12} /> Upload Image
+                  <label className="bg-zinc-100 hover:bg-zinc-200 px-3 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap">
+                    <Upload size={12} /> Upload Fallback
                     <input
                       type="file"
                       accept="image/*"
                       className="hidden"
                       onChange={async (e) => {
                         const file = e.target.files?.[0];
+                        e.currentTarget.value = '';
                         if (file) {
                           const res = await handleFileUpload(file);
                           if (res) {
-                            setFormSettings({ ...formSettings, heroImageUrl: res });
+                            await applyAndSyncHeroSettings(
+                              { heroImageUrl: res },
+                              'Hero fallback image updated & synced'
+                            );
                           }
                         }
                       }}
@@ -1333,56 +1582,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              {/* Video Zoom & Position Controls */}
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-6 pt-4 border-t border-zinc-100">
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
-                    Overlay Darkness ({formSettings.heroOverlayOpacity ?? 10}%)
-                  </label>
-                  <input
-                    type="range"
-                    min="0"
-                    max="90"
-                    value={formSettings.heroOverlayOpacity ?? 10}
-                    onChange={(e) =>
-                      setFormSettings({ ...formSettings, heroOverlayOpacity: Number(e.target.value) })
-                    }
-                    className="w-full accent-black cursor-pointer"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
-                    Media / Image Zoom ({(formSettings.heroVideoZoom || formSettings.heroImageZoom || 1).toFixed(1)}x)
-                  </label>
-                  <input
-                    type="range"
-                    min="1"
-                    max="4"
-                    step="0.1"
-                    value={formSettings.heroVideoZoom || formSettings.heroImageZoom || 1}
-                    onChange={(e) => {
-                      const z = Number(e.target.value);
-                      setFormSettings({ ...formSettings, heroVideoZoom: z, heroImageZoom: z });
-                    }}
-                    className="w-full accent-black cursor-pointer"
-                  />
-                </div>
-                <div>
-                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
-                    Video Position ({formSettings.heroVideoPosition || '50% 50%'})
-                  </label>
-                  <select
-                    value={formSettings.heroVideoPosition || '50% 50%'}
-                    onChange={(e) =>
-                      setFormSettings({ ...formSettings, heroVideoPosition: e.target.value })
-                    }
-                    className="w-full border border-zinc-200 p-2 text-xs uppercase font-bold"
-                  >
-                    <option value="50% 50%">Center (50% 50%)</option>
-                    <option value="50% 20%">Top (50% 20%)</option>
-                    <option value="50% 80%">Bottom (50% 80%)</option>
-                  </select>
-                </div>
+              <div className="pt-4 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-3">
+                <span className="text-[11px] text-zinc-500">
+                  Zoom out to 0.50x or zoom in to 2.50x, then save to apply live on desktop and mobile.
+                </span>
+                <button
+                  type="button"
+                  disabled={savingSettings || uploadingHeroMedia}
+                  onClick={() => applyAndSyncHeroSettings({}, 'Hero media & framing saved & synced')}
+                  className="bg-black text-white hover:bg-zinc-800 px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  <Save size={12} /> {savingSettings ? 'Saving...' : 'Save Hero Settings'}
+                </button>
               </div>
             </div>
 

@@ -9,13 +9,21 @@ interface HeaderVideoBannerProps {
 
 const DEFAULT_HERO_VIDEO_URL = '/assets/aistudio/brotherhood_hero_loop.mp4';
 
+const isImageSource = (url?: string): boolean => {
+  if (!url) return false;
+  const lower = url.toLowerCase();
+  if (lower.startsWith('data:image/')) return true;
+  if (lower.match(/\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/)) return true;
+  return false;
+};
+
 export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }) => {
   const [heroVideoIndex, setHeroVideoIndex] = useState(0);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const heroVideoRef = useRef<HTMLVideoElement>(null);
 
-  // Hero Video playlist computation (never let broken idb:// links block the default video)
-  const heroVideoList = React.useMemo(() => {
+  // Unified Hero Media playlist (supports mixed videos + photos auto-cycling together)
+  const heroMediaList = React.useMemo(() => {
     const rawList =
       settings.heroVideoUrls && settings.heroVideoUrls.length > 0
         ? settings.heroVideoUrls.filter((u) => Boolean(u && u.trim()))
@@ -27,31 +35,44 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     if (settings.heroVideoUrl && !settings.heroVideoUrl.startsWith('idb://')) {
       return [settings.heroVideoUrl];
     }
+    if (settings.heroImageUrl && !settings.heroImageUrl.startsWith('idb://')) {
+      return [settings.heroImageUrl];
+    }
     return [DEFAULT_HERO_VIDEO_URL];
-  }, [settings.heroVideoUrls, settings.heroVideoUrl]);
+  }, [settings.heroVideoUrls, settings.heroVideoUrl, settings.heroImageUrl]);
 
-  // Helper to detect image sources in video playlist
-  const isImageSource = (url?: string): boolean => {
-    if (!url) return false;
-    const lower = url.toLowerCase();
-    if (lower.startsWith('data:image/')) return true;
-    if (lower.match(/\.(jpeg|jpg|gif|png|webp|svg|avif)($|\?)/)) return true;
-    return false;
-  };
+  useEffect(() => {
+    if (heroVideoIndex >= heroMediaList.length) {
+      setHeroVideoIndex(0);
+    }
+  }, [heroVideoIndex, heroMediaList.length]);
 
-  const rawVideoSrc = heroVideoList[heroVideoIndex] || heroVideoList[0] || DEFAULT_HERO_VIDEO_URL;
-  const activeVideoSrc = useResolvedMedia(rawVideoSrc);
-  const srcToPlay = activeVideoSrc || (rawVideoSrc.startsWith('idb://') ? DEFAULT_HERO_VIDEO_URL : rawVideoSrc);
-  const isCurrentItemImage = isImageSource(activeVideoSrc) || isImageSource(rawVideoSrc);
+  const rawMediaSrc = heroMediaList[heroVideoIndex] || heroMediaList[0] || DEFAULT_HERO_VIDEO_URL;
+  const activeMediaSrc = useResolvedMedia(rawMediaSrc);
+  const srcToPlay =
+    activeMediaSrc || (rawMediaSrc.startsWith('idb://') ? DEFAULT_HERO_VIDEO_URL : rawMediaSrc);
+  const isCurrentItemImage = isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc);
   const isBrotherhoodHero = srcToPlay.includes('brotherhood_hero_loop');
 
-  // Seamless playlist switching & mobile autoplay enforcement (no play button)
+  const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
+  const heroZoom = Number(
+    isCurrentItemImage
+      ? settings.heroImageZoom ?? settings.heroVideoZoom ?? 1
+      : settings.heroVideoZoom ?? settings.heroImageZoom ?? 1
+  ) || 1;
+  const heroPosition =
+    (isCurrentItemImage
+      ? settings.heroImagePosition || settings.heroVideoPosition
+      : settings.heroVideoPosition || settings.heroImagePosition) || '50% 50%';
+
+  // Seamless mixed-playlist auto-cycling & mobile autoplay enforcement (no play button)
   useEffect(() => {
     if (isCurrentItemImage) {
       setIsVideoPlaying(false);
+      if (heroMediaList.length <= 1) return;
       const timer = setTimeout(() => {
-        setHeroVideoIndex((prev) => (prev + 1) % heroVideoList.length);
-      }, 6000);
+        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
+      }, 5000);
       return () => clearTimeout(timer);
     }
 
@@ -98,11 +119,17 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     };
 
     const handleEnded = () => {
-      if (heroVideoList.length > 1) {
-        setHeroVideoIndex((prev) => (prev + 1) % heroVideoList.length);
+      if (heroMediaList.length > 1) {
+        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       } else {
         video.currentTime = 0;
         attemptPlay();
+      }
+    };
+
+    const handleError = () => {
+      if (heroMediaList.length > 1) {
+        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       }
     };
 
@@ -118,6 +145,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     video.addEventListener('playing', handlePlaying);
     video.addEventListener('pause', handlePause);
     video.addEventListener('ended', handleEnded);
+    video.addEventListener('error', handleError);
     window.addEventListener('touchstart', handleUserGestureRetry, { passive: true, once: true });
     window.addEventListener('pointerdown', handleUserGestureRetry, { passive: true, once: true });
 
@@ -127,85 +155,116 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       video.removeEventListener('playing', handlePlaying);
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('ended', handleEnded);
+      video.removeEventListener('error', handleError);
       window.removeEventListener('touchstart', handleUserGestureRetry);
       window.removeEventListener('pointerdown', handleUserGestureRetry);
     };
-  }, [srcToPlay, isCurrentItemImage, heroVideoList.length]);
+  }, [srcToPlay, isCurrentItemImage, heroMediaList.length]);
 
   return (
     <section
       className={cn(
-        "relative z-0 w-full overflow-hidden flex flex-col justify-between bg-white transition-all",
-        settings.heroHeight || "aspect-[4/3] sm:aspect-[16/9] md:aspect-[21/9] min-h-[280px] sm:min-h-[380px] md:min-h-[480px]",
-        settings.heroContentAlign || "items-center justify-center"
+        'relative z-0 w-full max-w-full overflow-hidden flex flex-col justify-between bg-white transition-all',
+        settings.heroHeight ||
+          'aspect-[4/3] sm:aspect-[16/9] md:aspect-[21/9] min-h-[260px] sm:min-h-[380px] md:min-h-[480px]',
+        settings.heroContentAlign || 'items-center justify-center'
       )}
     >
-      {/* Background Video / Image Playlist */}
-      <div className="absolute inset-0 z-0 bg-white">
-        {heroVideoList.length > 0 ? (
-          isCurrentItemImage ? (
+      {/* Background Video / Image Playlist with Bidirectional Zoom & Fit Support */}
+      <div className="absolute inset-0 z-0 bg-white overflow-hidden">
+        <div
+          className="w-full h-full transition-transform duration-300 ease-out"
+          style={{
+            transform: `scale(${heroZoom})`,
+            transformOrigin: heroPosition,
+          }}
+        >
+          {heroMediaList.length > 0 ? (
+            isCurrentItemImage ? (
+              <ResolvedImage
+                src={rawMediaSrc}
+                className={cn('w-full h-full transition-opacity duration-500', heroFitClass)}
+                alt="Hero Campaign Media"
+                style={{
+                  objectPosition: heroPosition,
+                }}
+              />
+            ) : (
+              <>
+                {/* Fallback layer shown if mobile OS pauses autoplay, preventing any play button */}
+                {!isVideoPlaying && (
+                  <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
+                    <img
+                      src={
+                        isBrotherhoodHero
+                          ? '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg'
+                          : settings.heroImageUrl ||
+                            '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg'
+                      }
+                      alt="BrotherHood"
+                      className={cn('w-full h-full', heroFitClass)}
+                      style={{
+                        objectPosition: heroPosition,
+                      }}
+                    />
+                  </div>
+                )}
+                <video
+                  ref={heroVideoRef}
+                  src={srcToPlay}
+                  muted
+                  playsInline
+                  autoPlay
+                  preload="auto"
+                  controls={false}
+                  disablePictureInPicture
+                  disableRemotePlayback
+                  loop={heroMediaList.length === 1}
+                  className={cn(
+                    'w-full h-full pointer-events-none autoplay-video transition-opacity duration-300',
+                    heroFitClass,
+                    isVideoPlaying ? 'opacity-100' : 'opacity-0'
+                  )}
+                  style={{
+                    objectPosition: heroPosition,
+                  }}
+                />
+              </>
+            )
+          ) : settings.heroImageUrl ? (
             <ResolvedImage
-              src={rawVideoSrc}
-              className="w-full h-full object-cover hero-autoplay-breathe"
-              alt="Header Hero Stage"
+              src={settings.heroImageUrl}
+              className={cn('w-full h-full', heroFitClass)}
+              alt="Header Hero"
               style={{
-                transform: `scale(${settings.heroImageZoom || settings.heroVideoZoom || 1})`,
-                objectPosition: settings.heroImagePosition || settings.heroVideoPosition || '50% 50%',
+                objectPosition: heroPosition,
               }}
             />
           ) : (
-            <>
-              {/* Animated fallback layer shown seamlessly if a mobile browser (e.g. Low Power Mode) pauses autoplay, hiding any OS play button */}
-              {!isVideoPlaying && (
-                <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
-                  <img
-                    src={isBrotherhoodHero ? '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg' : (settings.heroImageUrl || '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg')}
-                    alt="BrotherHood"
-                    className="w-full h-full object-contain scale-125 md:scale-110 hero-autoplay-breathe"
-                  />
-                </div>
-              )}
-              <video
-                ref={heroVideoRef}
-                src={srcToPlay}
-                muted
-                playsInline
-                autoPlay
-                preload="auto"
-                controls={false}
-                disablePictureInPicture
-                disableRemotePlayback
-                loop={heroVideoList.length === 1}
-                className={cn(
-                  "w-full h-full object-cover pointer-events-none autoplay-video transition-opacity duration-300",
-                  isVideoPlaying ? "opacity-100" : "opacity-0"
-                )}
-                style={{
-                  transform: `scale(${settings.heroVideoZoom || 1})`,
-                  objectPosition: settings.heroVideoPosition || '50% 50%',
-                }}
-              />
-            </>
-          )
-        ) : settings.heroImageUrl ? (
-          <ResolvedImage
-            src={settings.heroImageUrl}
-            className="w-full h-full object-cover"
-            alt="Header Hero"
-            style={{
-              transform: `scale(${settings.heroImageZoom || 1})`,
-              objectPosition: settings.heroImagePosition || '50% 50%',
-            }}
-          />
-        ) : (
-          <div className="w-full h-full bg-white" />
-        )}
+            <div className="w-full h-full bg-white" />
+          )}
+        </div>
       </div>
 
-      {/* Hero Content Overlay */}
+      {/* Subtle multi-slide index indicator bar (only when 2+ hero media items exist) */}
+      {heroMediaList.length > 1 && (
+        <div className="absolute bottom-3 left-1/2 -translate-x-1/2 z-20 flex items-center gap-1.5 pointer-events-none">
+          {heroMediaList.map((_, idx) => (
+            <span
+              key={idx}
+              className={cn(
+                'h-0.5 transition-all duration-300',
+                idx === heroVideoIndex ? 'w-6 bg-black/80' : 'w-2.5 bg-black/25'
+              )}
+            />
+          ))}
+        </div>
+      )}
+
+      {/* Hero Content Container */}
       <div
         className={cn(
-          "relative z-10 px-6 pt-24 pb-8 transition-all w-full max-w-[1600px] mx-auto pointer-events-none",
+          'relative z-10 px-6 pt-24 pb-8 transition-all w-full max-w-[1600px] mx-auto pointer-events-none',
           settings.heroContentAlign?.includes('justify-center')
             ? 'text-center'
             : settings.heroContentAlign?.includes('justify-start')

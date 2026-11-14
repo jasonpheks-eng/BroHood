@@ -32,7 +32,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
   });
 
   return (
-    <div className="w-full">
+    <div className="w-full max-w-full overflow-x-clip">
       <Helmet
         title={`${settings.brandName || 'BROTHERHOOD'} | Official Streetwear & Editorial Merch`}
         description={

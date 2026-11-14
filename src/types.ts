@@ -100,6 +100,7 @@ export interface Settings {
   heroHeight?: string;
   heroContentAlign?: string;
   heroOverlayOpacity?: number;
+  heroMediaFit?: 'cover' | 'contain';
   heroVideoZoom?: number;
   heroVideoPosition?: string;
   heroVideoUrls?: string[];
