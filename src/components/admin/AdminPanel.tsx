@@ -85,6 +85,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
   const [uploadingHeroMedia, setUploadingHeroMedia] = useState(false);
+  const [heroUploadError, setHeroUploadError] = useState<string | null>(null);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const setFormSettings = React.useCallback(
@@ -255,17 +256,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Cross-device media upload handler (Supabase Storage primary + compact image fallback)
+  // Cross-device media upload handler (Supabase Storage primary + server / compact image fallback)
   const handleFileUpload = async (file: File): Promise<string> => {
     const isVideo = file.type.startsWith('video/');
-    showToast(isVideo ? 'Uploading video to Supabase...' : 'Uploading photo...');
+    showToast(isVideo ? 'Uploading video...' : 'Uploading photo...');
     const result = await uploadMediaToSupabase(file, file.name);
     if (!result.url) {
-      showToast(result.error || 'Upload failed. Please try a smaller file or paste an HTTPS link.');
+      const msg = result.error || 'Upload failed. Please try a smaller file or paste an HTTPS link.';
+      setHeroUploadError(msg);
+      showToast(msg);
       return '';
     }
+    setHeroUploadError(null);
     if (result.source === 'supabase') {
       showToast(`${isVideo ? 'Video' : 'Photo'} synced to Supabase`);
+    } else if (result.source === 'server') {
+      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready`);
     } else {
       showToast('Photo optimized for cross-device sync');
     }
@@ -292,6 +298,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleHeroMultiUpload = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
+    setHeroUploadError(null);
     setUploadingHeroMedia(true);
     try {
       const uploadedUrls: string[] = [];
@@ -303,17 +310,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       }
       if (uploadedUrls.length > 0) {
         const current = (formSettings.heroVideoUrls || []).filter((u) => Boolean(u && u.trim()));
-        const nextList = [...current, ...uploadedUrls];
+        const hadOnlyDefault =
+          current.length === 1 && current[0] === '/assets/aistudio/brotherhood_hero_loop.mp4';
+        const nextList = hadOnlyDefault ? [...uploadedUrls] : [...current, ...uploadedUrls];
         await applyAndSyncHeroSettings(
           {
             heroVideoUrls: nextList,
             heroVideoUrl: nextList[0],
           },
-          `Added & synced ${uploadedUrls.length} hero ${uploadedUrls.length === 1 ? 'item' : 'items'}`
+          hadOnlyDefault
+            ? 'Replaced default hero media & synced'
+            : `Added & synced ${uploadedUrls.length} hero ${uploadedUrls.length === 1 ? 'item' : 'items'}`
         );
       }
     } catch (err) {
       console.error('Hero multi-upload failed:', err);
+      setHeroUploadError('Error uploading hero media.');
       showToast('Error uploading hero media.');
     } finally {
       setUploadingHeroMedia(false);
@@ -1264,6 +1276,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </button>
                 </div>
               </div>
+
+              {heroUploadError && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center justify-between gap-2">
+                  <span>{heroUploadError}</span>
+                  <button
+                    type="button"
+                    onClick={() => setHeroUploadError(null)}
+                    className="text-rose-500 hover:text-rose-800 p-1"
+                    aria-label="Dismiss error"
+                  >
+                    <X size={14} />
+                  </button>
+                </div>
+              )}
 
               <div className="space-y-3">
                 {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i, arr) => {

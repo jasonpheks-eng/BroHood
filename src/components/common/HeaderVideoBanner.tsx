@@ -191,15 +191,14 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
               />
             ) : (
               <>
-                {/* Fallback layer shown if mobile OS pauses autoplay, preventing any play button */}
-                {!isVideoPlaying && (
+                {/* Fallback poster shown only for default BrotherHood hero or when a custom hero fallback image is configured */}
+                {!isVideoPlaying && (isBrotherhoodHero || settings.heroImageUrl) && (
                   <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
                     <img
                       src={
                         isBrotherhoodHero
                           ? '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg'
-                          : settings.heroImageUrl ||
-                            '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg'
+                          : settings.heroImageUrl!
                       }
                       alt="BrotherHood"
                       className={cn('w-full h-full', heroFitClass)}
@@ -210,6 +209,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   </div>
                 )}
                 <video
+                  key={srcToPlay}
                   ref={heroVideoRef}
                   src={srcToPlay}
                   muted
@@ -223,7 +223,9 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   className={cn(
                     'w-full h-full pointer-events-none autoplay-video transition-opacity duration-300',
                     heroFitClass,
-                    isVideoPlaying ? 'opacity-100' : 'opacity-0'
+                    isVideoPlaying || (!isBrotherhoodHero && !settings.heroImageUrl)
+                      ? 'opacity-100'
+                      : 'opacity-0'
                   )}
                   style={{
                     objectPosition: heroPosition,

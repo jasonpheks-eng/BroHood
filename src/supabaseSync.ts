@@ -4,8 +4,23 @@ import { compressImageForCrossDevice, readFileAsDataUrl } from './utils';
 
 export interface MediaUploadResult {
   url: string;
-  source: 'supabase' | 'inline' | 'external';
+  source: 'supabase' | 'server' | 'inline' | 'external';
   error?: string;
+}
+
+async function uploadToLocalMediaServer(blob: Blob, fileName: string): Promise<string> {
+  const safeName = fileName.replace(/[^a-zA-Z0-9._-]/g, '_') || 'media';
+  const resp = await fetch('/api/upload-media', {
+    method: 'POST',
+    headers: {
+      'Content-Type': blob.type || 'application/octet-stream',
+      'X-File-Name': encodeURIComponent(safeName),
+    },
+    body: blob,
+  });
+  if (!resp.ok) return '';
+  const data = (await resp.json()) as { url?: string };
+  return data?.url || '';
 }
 
 export async function uploadMediaToSupabase(
@@ -55,23 +70,30 @@ export async function uploadMediaToSupabase(
       console.warn('Supabase storage upload notice:', error.message);
     }
 
-    // Cross-device fallback for images: compress into a compact JPEG data URL
-    // that fits comfortably inside Firestore rules (<= 200KB) and Supabase DB rows
-    // so the uploaded photo still shows up on every customer's phone.
+    // For images: compress into a compact JPEG data URL for cross-device Firestore/Supabase sync,
+    // or fall back to Express /api/upload-media if still large.
     if (isImage) {
       const compressed = await compressImageForCrossDevice(fileOrDataUrl, 155000);
       if (compressed && compressed.length <= 195000) {
         return { url: compressed, source: 'inline' };
       }
+      const serverUrl = await uploadToLocalMediaServer(blob, safeName);
+      if (serverUrl) {
+        return { url: serverUrl, source: 'server' };
+      }
       return {
         url: '',
         source: 'inline',
-        error: 'Image is too large after compression. Please upload a smaller image or enable the Supabase "media" storage bucket.',
+        error: 'Image is too large after compression. Please upload a smaller image or create the "media" bucket in Supabase.',
       };
     }
 
-    // For small video clips, allow compact inline data URL fallback if <= 180KB
+    // For videos: upload directly to the app media server (/api/upload-media) so any MP4/MOV/WebM plays immediately
     if (isVideo) {
+      const serverUrl = await uploadToLocalMediaServer(blob, safeName);
+      if (serverUrl) {
+        return { url: serverUrl, source: 'server' };
+      }
       const rawDataUrl =
         typeof fileOrDataUrl === 'string'
           ? fileOrDataUrl
@@ -84,8 +106,13 @@ export async function uploadMediaToSupabase(
         source: 'supabase',
         error:
           error?.message ||
-          'Video upload requires the public "media" bucket in Supabase Storage (or paste an HTTPS .mp4 link).',
+          'Video upload failed. Please try an MP4 under 150MB or paste an HTTPS .mp4 link.',
       };
+    }
+
+    const serverUrl = await uploadToLocalMediaServer(blob, safeName);
+    if (serverUrl) {
+      return { url: serverUrl, source: 'server' };
     }
 
     return {
