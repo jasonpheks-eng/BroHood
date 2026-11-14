@@ -54,6 +54,18 @@ export async function uploadMediaToSupabase(
       blob.type ||
       (isVideo ? 'video/mp4' : isImage ? 'image/jpeg' : 'application/octet-stream');
 
+    // For videos: try local app media server (/api/upload-media) first
+    if (isVideo) {
+      try {
+        const serverUrl = await uploadToLocalMediaServer(blob, safeName);
+        if (serverUrl) {
+          return { url: serverUrl, source: 'server' };
+        }
+      } catch (e) {
+        console.warn('Local media server upload notice:', e);
+      }
+    }
+
     const { data, error } = await supabase.storage.from('media').upload(filePath, blob, {
       contentType,
       upsert: true,
@@ -88,18 +100,11 @@ export async function uploadMediaToSupabase(
       };
     }
 
-    // For videos: upload directly to the app media server (/api/upload-media) so any MP4/MOV/WebM plays immediately
+    // For videos: try server upload if Supabase storage failed
     if (isVideo) {
       const serverUrl = await uploadToLocalMediaServer(blob, safeName);
       if (serverUrl) {
         return { url: serverUrl, source: 'server' };
-      }
-      const rawDataUrl =
-        typeof fileOrDataUrl === 'string'
-          ? fileOrDataUrl
-          : await readFileAsDataUrl(fileOrDataUrl);
-      if (rawDataUrl.length <= 185000) {
-        return { url: rawDataUrl, source: 'inline' };
       }
       return {
         url: '',

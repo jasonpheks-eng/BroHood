@@ -24,34 +24,37 @@ export const Navbar: React.FC<NavbarProps> = ({
   onRequireAdminAuth,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
+  const [isHovered, setIsHovered] = React.useState(false);
   const [isVisible, setIsVisible] = React.useState(true);
-  const lastScrollY = React.useRef(0);
+  const hideTimerRef = React.useRef<any>(null);
+
+  const startHideTimer = React.useCallback(() => {
+    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+    if (mobileMenuOpen || isHovered) return;
+    hideTimerRef.current = setTimeout(() => {
+      if (!isHovered && !mobileMenuOpen) {
+        setIsVisible(false);
+      }
+    }, 3000);
+  }, [mobileMenuOpen, isHovered]);
 
   React.useEffect(() => {
-    const handleScroll = () => {
-      const currentScrollY = window.scrollY;
-
-      if (mobileMenuOpen) {
-        setIsVisible(true);
-        return;
-      }
-
-      if (currentScrollY <= 60) {
-        setIsVisible(true);
-      } else if (currentScrollY > lastScrollY.current + 8) {
-        // Scrolling down -> hide navbar
-        setIsVisible(false);
-      } else if (currentScrollY < lastScrollY.current - 8) {
-        // Scrolling up -> reveal navbar
-        setIsVisible(true);
-      }
-
-      lastScrollY.current = currentScrollY;
+    // Show initially, then start 3s hide timer
+    setIsVisible(true);
+    startHideTimer();
+    return () => {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
     };
+  }, [startHideTimer]);
 
-    window.addEventListener('scroll', handleScroll, { passive: true });
-    return () => window.removeEventListener('scroll', handleScroll);
-  }, [mobileMenuOpen]);
+  React.useEffect(() => {
+    if (mobileMenuOpen) {
+      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      setIsVisible(true);
+    } else {
+      startHideTimer();
+    }
+  }, [mobileMenuOpen, startHideTimer]);
 
   const handleNavClick = (target: string) => {
     setMobileMenuOpen(false);
@@ -94,6 +97,15 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header
+      onMouseEnter={() => {
+        setIsHovered(true);
+        setIsVisible(true);
+        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
+      }}
+      onMouseLeave={() => {
+        setIsHovered(false);
+        startHideTimer();
+      }}
       className={cn(
         'sticky top-0 z-[120] bg-white/95 backdrop-blur-md border-b border-zinc-200 transition-transform duration-300 ease-in-out',
         isVisible ? 'translate-y-0' : '-translate-y-full'

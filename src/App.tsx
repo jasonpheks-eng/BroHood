@@ -328,6 +328,7 @@ export default function App() {
       (snap) => {
         if (snap.exists()) {
           const data = snap.data() as any;
+          console.log('[Firestore Settings] Received settings snapshot:', data);
           const heroUrls = data.heroVideoUrls;
           const hasOldOrBrokenHeroVideo =
             !Array.isArray(heroUrls) ||
@@ -510,9 +511,11 @@ export default function App() {
           }
         });
       })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, () => {
+      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload) => {
+        console.log('[Supabase Realtime] Settings table changed:', payload);
         fetchSupabaseData().then((supa) => {
           if (supa.settings) {
+            console.log('[Supabase Realtime] Fetched updated Supabase settings:', supa.settings);
             setSettings((prev) => ({
               ...prev,
               ...supa.settings,

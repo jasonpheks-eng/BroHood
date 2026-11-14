@@ -29,20 +29,20 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
         ? settings.heroVideoUrls.filter((u) => Boolean(u && u.trim()))
         : [];
     const usableList = rawList.filter((u) => !u.startsWith('idb://'));
-    if (usableList.length > 0) {
-      return usableList;
-    }
-    if (settings.heroVideoUrl && !settings.heroVideoUrl.startsWith('idb://')) {
-      return [settings.heroVideoUrl];
-    }
-    if (settings.heroImageUrl && !settings.heroImageUrl.startsWith('idb://')) {
-      return [settings.heroImageUrl];
-    }
-    return [DEFAULT_HERO_VIDEO_URL];
+    const resolved = usableList.length > 0
+      ? usableList
+      : settings.heroVideoUrl && !settings.heroVideoUrl.startsWith('idb://')
+      ? [settings.heroVideoUrl]
+      : settings.heroImageUrl && !settings.heroImageUrl.startsWith('idb://')
+      ? [settings.heroImageUrl]
+      : [DEFAULT_HERO_VIDEO_URL];
+    console.log('[HeroBanner] Computed heroMediaList:', resolved, 'rawSettingsUrls:', settings.heroVideoUrls);
+    return resolved;
   }, [settings.heroVideoUrls, settings.heroVideoUrl, settings.heroImageUrl]);
 
   useEffect(() => {
     if (heroVideoIndex >= heroMediaList.length) {
+      console.log('[HeroBanner] Index reset from', heroVideoIndex, 'to 0 because list length is', heroMediaList.length);
       setHeroVideoIndex(0);
     }
   }, [heroVideoIndex, heroMediaList.length]);
@@ -53,6 +53,14 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     activeMediaSrc || (rawMediaSrc.startsWith('idb://') ? DEFAULT_HERO_VIDEO_URL : rawMediaSrc);
   const isCurrentItemImage = isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc);
   const isBrotherhoodHero = srcToPlay.includes('brotherhood_hero_loop');
+
+  const prevSrcRef = useRef<string>('');
+  useEffect(() => {
+    if (prevSrcRef.current !== srcToPlay) {
+      console.log('[HeroBanner] Transitioning source: old =', prevSrcRef.current, 'new =', srcToPlay, 'isImage =', isCurrentItemImage);
+      prevSrcRef.current = srcToPlay;
+    }
+  }, [srcToPlay, isCurrentItemImage]);
 
   const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
   const heroZoom = Number(
@@ -69,9 +77,14 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
   useEffect(() => {
     if (isCurrentItemImage) {
       setIsVideoPlaying(false);
+      console.log('[HeroBanner] Current item is image, setting 5s timer for index:', heroVideoIndex);
       if (heroMediaList.length <= 1) return;
       const timer = setTimeout(() => {
-        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
+        setHeroVideoIndex((prev) => {
+          const next = (prev + 1) % heroMediaList.length;
+          console.log('[HeroBanner] Advancing image index from', prev, 'to', next);
+          return next;
+        });
       }, 5000);
       return () => clearTimeout(timer);
     }
@@ -90,8 +103,9 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     video.setAttribute('playsinline', '');
     video.setAttribute('webkit-playsinline', 'true');
 
-    if (video.getAttribute('src') !== srcToPlay) {
-      video.setAttribute('src', srcToPlay);
+    if (video.src !== srcToPlay && video.getAttribute('src') !== srcToPlay) {
+      console.log('[HeroBanner] Updating video element src directly to:', srcToPlay);
+      video.src = srcToPlay;
       video.load();
     }
 
@@ -103,15 +117,20 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
+            console.log('[HeroBanner] Video play succeeded for src:', srcToPlay);
             setIsVideoPlaying(true);
           })
-          .catch(() => {
+          .catch((err) => {
+            console.warn('[HeroBanner] Video play blocked/failed:', err);
             setIsVideoPlaying(false);
           });
       }
     };
 
-    const handlePlaying = () => setIsVideoPlaying(true);
+    const handlePlaying = () => {
+      console.log('[HeroBanner] Video playing event fired for:', srcToPlay);
+      setIsVideoPlaying(true);
+    };
     const handlePause = () => {
       if (!video.ended) {
         attemptPlay();
@@ -119,6 +138,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     };
 
     const handleEnded = () => {
+      console.log('[HeroBanner] Video ended event fired for index:', heroVideoIndex);
       if (heroMediaList.length > 1) {
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       } else {
@@ -127,7 +147,8 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       }
     };
 
-    const handleError = () => {
+    const handleError = (e: any) => {
+      console.error('[HeroBanner] Video playback error for src:', srcToPlay, e);
       if (heroMediaList.length > 1) {
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       }
