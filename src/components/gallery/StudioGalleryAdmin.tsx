@@ -21,7 +21,7 @@ import {
 } from '../../types';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { inferMediaType } from '../../hooks/useStudioGalleryState';
-import { uploadMediaToSupabase } from '../../supabaseSync';
+import { uploadMediaToSupabase, detectIsVideoFile } from '../../supabaseSync';
 import { compressImageForCrossDevice } from '../../utils';
 
 interface StudioGalleryAdminProps {
@@ -137,7 +137,7 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
 
   const handleUploadTileMedia = async (id: string, file: File) => {
     try {
-      const isVideoFile = file.type.startsWith('video/');
+      const isVideoFile = detectIsVideoFile(file);
       const metadata: StudioGalleryItem['mediaMetadata'] = {
         mimeType: file.type || (isVideoFile ? 'video/mp4' : 'image/jpeg'),
         fileName: file.name,
@@ -145,11 +145,11 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
         source: 'upload',
       };
 
-      onShowToast?.(isVideoFile ? 'Uploading video to Supabase...' : 'Uploading photo...');
+      onShowToast?.(isVideoFile ? 'Uploading video...' : 'Uploading photo...');
 
       const uploadRes = await uploadMediaToSupabase(file, file.name);
       if (!uploadRes.url) {
-        onShowToast?.(uploadRes.error || 'Could not upload media for cross-device sync.');
+        onShowToast?.(uploadRes.error || 'Could not upload media.');
         return;
       }
 
@@ -169,6 +169,8 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
       onShowToast?.(
         uploadRes.source === 'supabase'
           ? `${isVideoFile ? 'Video' : 'Photo'} synced to Supabase — click Save & Apply`
+          : uploadRes.source === 'server'
+          ? `${isVideoFile ? 'Video' : 'Photo'} uploaded — click Save & Apply`
           : 'Photo optimized for all devices — click Save & Apply'
       );
     } catch (err) {

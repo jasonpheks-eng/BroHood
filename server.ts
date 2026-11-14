@@ -7,16 +7,36 @@ const PORT = Number(process.env.PORT) || 3000;
 const ROOT_DIR = process.cwd();
 const UPLOADS_DIR = path.join(ROOT_DIR, 'uploads');
 const DIST_DIR = path.join(ROOT_DIR, 'dist');
+const MAX_UPLOAD_BYTES = 150 * 1024 * 1024; // 150 MB
+const CHUNK_LIMIT_BYTES = 4 * 1024 * 1024; // 4 MB chunks stay well under Cloud Run's 32 MiB limit
 
 fs.mkdirSync(UPLOADS_DIR, { recursive: true });
 
+// Clean up abandoned partial uploads older than 2 hours
+try {
+  const cutoff = Date.now() - 2 * 60 * 60 * 1000;
+  for (const entry of fs.readdirSync(UPLOADS_DIR)) {
+    if (entry.startsWith('.tmp_')) {
+      const full = path.join(UPLOADS_DIR, entry);
+      const st = fs.statSync(full);
+      if (st.mtimeMs < cutoff) {
+        fs.unlinkSync(full);
+      }
+    }
+  }
+} catch {
+  // Ignore startup cleanup warnings
+}
+
 const MIME_BY_EXT: Record<string, string> = {
   '.mp4': 'video/mp4',
-  '.m4v': 'video/x-m4v',
+  '.m4v': 'video/mp4',
   '.mov': 'video/quicktime',
   '.webm': 'video/webm',
   '.ogv': 'video/ogg',
   '.3gp': 'video/3gpp',
+  '.mkv': 'video/x-matroska',
+  '.avi': 'video/x-msvideo',
   '.jpg': 'image/jpeg',
   '.jpeg': 'image/jpeg',
   '.png': 'image/png',
@@ -24,6 +44,8 @@ const MIME_BY_EXT: Record<string, string> = {
   '.gif': 'image/gif',
   '.svg': 'image/svg+xml',
   '.avif': 'image/avif',
+  '.heic': 'image/heic',
+  '.heif': 'image/heif',
 };
 
 const EXT_BY_MIME: Record<string, string> = {
@@ -32,21 +54,39 @@ const EXT_BY_MIME: Record<string, string> = {
   'video/webm': '.webm',
   'video/x-m4v': '.m4v',
   'video/ogg': '.ogv',
+  'video/3gpp': '.3gp',
+  'video/x-matroska': '.mkv',
   'image/jpeg': '.jpg',
   'image/png': '.png',
   'image/webp': '.webp',
   'image/gif': '.gif',
   'image/svg+xml': '.svg',
   'image/avif': '.avif',
+  'image/heic': '.heic',
+  'image/heif': '.heif',
 };
+
+function buildStoredFileName(rawName: string, contentType: string): string {
+  const safeBase = path.basename(rawName || 'media').replace(/[^a-zA-Z0-9._-]/g, '_') || 'media';
+  const normalizedType = String(contentType || '').split(';')[0].trim().toLowerCase();
+  const existingExt = path.extname(safeBase).toLowerCase();
+  const inferredExt = existingExt || EXT_BY_MIME[normalizedType] || '';
+  const baseWithoutExt = existingExt ? safeBase.slice(0, -existingExt.length) : safeBase;
+  return `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${baseWithoutExt}${inferredExt}`;
+}
+
+function isSafeUploadId(uploadId: string): boolean {
+  return /^[a-zA-Z0-9_-]{6,80}$/.test(uploadId);
+}
 
 async function startServer() {
   const app = express();
 
+  // Single-request upload (fast path for files <= 4MB; also works up to 150MB locally)
   app.post(
     '/api/upload-media',
     express.raw({
-      type: ['video/*', 'image/*', 'application/octet-stream'],
+      type: '*/*',
       limit: '150mb',
     }),
     (req: Request, res: Response) => {
@@ -59,13 +99,8 @@ async function startServer() {
 
         const rawNameHeader = req.headers['x-file-name'];
         const rawName = typeof rawNameHeader === 'string' ? decodeURIComponent(rawNameHeader) : 'media';
-        const safeBase = path.basename(rawName).replace(/[^a-zA-Z0-9._-]/g, '_') || 'media';
-
-        const contentType = String(req.headers['content-type'] || '').split(';')[0].trim().toLowerCase();
-        const existingExt = path.extname(safeBase).toLowerCase();
-        const inferredExt = existingExt || EXT_BY_MIME[contentType] || '';
-        const baseWithoutExt = existingExt ? safeBase.slice(0, -existingExt.length) : safeBase;
-        const fileName = `${Date.now()}_${Math.random().toString(36).slice(2, 8)}_${baseWithoutExt}${inferredExt}`;
+        const contentType = String(req.headers['content-type'] || '');
+        const fileName = buildStoredFileName(rawName, contentType);
 
         const targetPath = path.join(UPLOADS_DIR, fileName);
         fs.writeFileSync(targetPath, body);
@@ -78,8 +113,137 @@ async function startServer() {
     }
   );
 
+  // Lightweight health endpoint for admin upload diagnostics
+  app.get('/api/upload-media-health', (_req: Request, res: Response) => {
+    res.json({
+      ok: true,
+      maxUploadBytes: MAX_UPLOAD_BYTES,
+      chunkLimitBytes: CHUNK_LIMIT_BYTES,
+    });
+  });
+
+  // Chunked upload Step 1: Initialize session (bypasses Cloud Run 32 MiB single-request body limit)
+  app.post('/api/upload-media-init', express.json({ limit: '32kb' }), (req: Request, res: Response) => {
+    try {
+      const rawName = typeof req.body?.fileName === 'string' ? req.body.fileName : 'media.mp4';
+      const contentType = typeof req.body?.contentType === 'string' ? req.body.contentType : 'video/mp4';
+      const totalBytes = Number(req.body?.totalBytes) || 0;
+
+      if (totalBytes > MAX_UPLOAD_BYTES) {
+        res.status(413).json({ error: 'File exceeds the 150MB maximum upload size.' });
+        return;
+      }
+
+      const uploadId = `${Date.now()}_${Math.random().toString(36).slice(2, 10)}`;
+      const finalFileName = buildStoredFileName(rawName, contentType);
+      const partPath = path.join(UPLOADS_DIR, `.tmp_${uploadId}.part`);
+      const metaPath = path.join(UPLOADS_DIR, `.tmp_${uploadId}.meta.json`);
+
+      fs.writeFileSync(partPath, Buffer.alloc(0));
+      fs.writeFileSync(
+        metaPath,
+        JSON.stringify({ finalFileName, totalBytes, createdAt: Date.now() }),
+        'utf8'
+      );
+
+      res.json({
+        uploadId,
+        chunkBytes: CHUNK_LIMIT_BYTES,
+        maxUploadBytes: MAX_UPLOAD_BYTES,
+      });
+    } catch (err) {
+      console.error('Chunk init error:', err);
+      res.status(500).json({ error: 'Failed to initialize media upload.' });
+    }
+  });
+
+  // Chunked upload Step 2: Receive binary slice at byte offset
+  app.post(
+    '/api/upload-media-chunk',
+    express.raw({
+      type: '*/*',
+      limit: '10mb',
+    }),
+    async (req: Request, res: Response) => {
+      try {
+        const uploadId = String(req.headers['x-upload-id'] || '');
+        const offsetHeader = req.headers['x-chunk-offset'];
+        const offset = Number(offsetHeader);
+
+        if (!isSafeUploadId(uploadId) || !Number.isFinite(offset) || offset < 0) {
+          res.status(400).json({ error: 'Invalid upload session or chunk offset.' });
+          return;
+        }
+
+        const body = req.body;
+        if (!Buffer.isBuffer(body) || body.length === 0) {
+          res.status(400).json({ error: 'Empty media chunk received.' });
+          return;
+        }
+
+        if (offset + body.length > MAX_UPLOAD_BYTES) {
+          res.status(413).json({ error: 'Upload exceeds 150MB limit.' });
+          return;
+        }
+
+        const partPath = path.join(UPLOADS_DIR, `.tmp_${uploadId}.part`);
+        if (!fs.existsSync(partPath)) {
+          res.status(404).json({ error: 'Upload session not found or expired.' });
+          return;
+        }
+
+        const handle = await fs.promises.open(partPath, 'r+');
+        try {
+          await handle.write(body, 0, body.length, offset);
+        } finally {
+          await handle.close();
+        }
+
+        res.json({ ok: true, received: body.length, offset });
+      } catch (err) {
+        console.error('Chunk write error:', err);
+        res.status(500).json({ error: 'Failed to write media chunk.' });
+      }
+    }
+  );
+
+  // Chunked upload Step 3: Finalize temp file into playable /uploads/:filename
+  app.post('/api/upload-media-complete', express.json({ limit: '16kb' }), (req: Request, res: Response) => {
+    try {
+      const uploadId = String(req.body?.uploadId || '');
+      if (!isSafeUploadId(uploadId)) {
+        res.status(400).json({ error: 'Invalid uploadId.' });
+        return;
+      }
+
+      const partPath = path.join(UPLOADS_DIR, `.tmp_${uploadId}.part`);
+      const metaPath = path.join(UPLOADS_DIR, `.tmp_${uploadId}.meta.json`);
+      if (!fs.existsSync(partPath) || !fs.existsSync(metaPath)) {
+        res.status(404).json({ error: 'Upload session not found.' });
+        return;
+      }
+
+      const meta = JSON.parse(fs.readFileSync(metaPath, 'utf8')) as { finalFileName: string };
+      const finalName = path.basename(meta.finalFileName);
+      const finalPath = path.join(UPLOADS_DIR, finalName);
+
+      fs.renameSync(partPath, finalPath);
+      fs.unlinkSync(metaPath);
+
+      res.json({ url: `/uploads/${finalName}` });
+    } catch (err) {
+      console.error('Chunk complete error:', err);
+      res.status(500).json({ error: 'Failed to finalize uploaded media.' });
+    }
+  });
+
   app.get('/uploads/:filename', (req: Request, res: Response) => {
     const safeName = path.basename(String(req.params.filename || ''));
+    if (!safeName || safeName.startsWith('.tmp_')) {
+      res.status(404).end('Media not found');
+      return;
+    }
+
     const filePath = path.join(UPLOADS_DIR, safeName);
     if (!fs.existsSync(filePath)) {
       res.status(404).end('Media not found');
@@ -94,6 +258,7 @@ async function startServer() {
 
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');
     res.setHeader('Accept-Ranges', 'bytes');
+    res.setHeader('Access-Control-Allow-Origin', '*');
 
     if (range) {
       const parts = range.replace(/bytes=/, '').split('-');

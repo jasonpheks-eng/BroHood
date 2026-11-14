@@ -21,6 +21,15 @@ import {
   ArrowUp,
   ArrowDown,
   RotateCcw,
+  Terminal,
+  RefreshCw,
+  KeyRound,
+  Eye,
+  EyeOff,
+  Database,
+  ShieldCheck,
+  ShieldAlert,
+  CheckCircle2,
 } from 'lucide-react';
 import {
   Product,
@@ -33,7 +42,28 @@ import {
   SocialLinkItem,
 } from '../../types';
 import { formatPrice, getDefaultSocialLinks, formatWhatsAppDigits, compressImageForCrossDevice } from '../../utils';
-import { uploadMediaToSupabase } from '../../supabaseSync';
+import {
+  uploadMediaToSupabase,
+  detectIsVideoFile,
+  runSupabaseStorageDiagnostics,
+  verifySupabaseApiConnection,
+  resetSupabaseBucketCache,
+  SupabaseStorageDiagnosticReport,
+  SupabaseDiagnosticLogEntry,
+  SupabaseConnectionVerification,
+} from '../../supabaseSync';
+import {
+  DEFAULT_SUPABASE_URL,
+  DEFAULT_SUPABASE_ANON_KEY,
+  DEFAULT_SUPABASE_BUCKET,
+  extractSupabaseProjectId,
+  getSupabaseConfig,
+  updateSupabaseConfig,
+  sanitizePastedSupabaseUrl,
+  sanitizePastedCredential,
+  sanitizePastedBucketName,
+  isSecretSupabaseKey,
+} from '../../supabase';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
@@ -47,6 +77,11 @@ interface AdminPanelProps {
   onDeleteProduct: (productId: string) => Promise<void>;
   onSaveSettings: (settings: Settings) => Promise<void>;
   onSaveWhatsappNumber?: (whatsappNumber: string) => Promise<void>;
+  onSaveApiKeys?: (keys: {
+    supabaseUrl: string;
+    supabaseAnonKey: string;
+    supabaseBucket: string;
+  }) => Promise<void>;
   onSaveCreatorPost?: (post: CreatorPost) => Promise<void>;
   onDeleteCreatorPost?: (postId: string) => Promise<void>;
   onBackToStore: () => void;
@@ -72,11 +107,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onDeleteProduct,
   onSaveSettings,
   onSaveWhatsappNumber,
+  onSaveApiKeys,
   onSaveCreatorPost,
   onDeleteCreatorPost,
   onBackToStore,
 }) => {
-  const [activeTab, setActiveTab] = useState<'products' | 'gallery' | 'settings' | 'creators'>('products');
+  const [activeTab, setActiveTab] = useState<'products' | 'gallery' | 'settings' | 'api-keys' | 'creators'>('products');
   const [isEditingProduct, setIsEditingProduct] = useState(false);
   const [formProduct, setFormProduct] = useState<Partial<Product>>({});
   const [formSettings, setRawFormSettings] = useState<Settings>({ ...settings });
@@ -85,7 +121,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [savingSettings, setSavingSettings] = useState(false);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
   const [uploadingHeroMedia, setUploadingHeroMedia] = useState(false);
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null);
   const [heroUploadError, setHeroUploadError] = useState<string | null>(null);
+  const [heroNeedsBucketSql, setHeroNeedsBucketSql] = useState(false);
+  const initialSupabaseCfg = React.useMemo(() => getSupabaseConfig(), []);
+  const [bucketNotFoundDetail, setBucketNotFoundDetail] = useState<string | null>(null);
+  const [expectedProjectId, setExpectedProjectId] = useState<string>(initialSupabaseCfg.projectId);
+  const [showSupabaseAnonKey, setShowSupabaseAnonKey] = useState(false);
+  const [savingSupabaseKeys, setSavingSupabaseKeys] = useState(false);
+  const [verifyingSupabaseKeys, setVerifyingSupabaseKeys] = useState(false);
+  const [apiKeyProtectionError, setApiKeyProtectionError] = useState<string | null>(null);
+  const [apiVerificationResult, setApiVerificationResult] = useState<SupabaseConnectionVerification | null>(null);
+  const [runningDiagnostics, setRunningDiagnostics] = useState(false);
+  const [storageDiagReport, setStorageDiagReport] = useState<SupabaseStorageDiagnosticReport | null>(null);
+  const [storageDiagLogs, setStorageDiagLogs] = useState<SupabaseDiagnosticLogEntry[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
 
   const setFormSettings = React.useCallback(
@@ -256,23 +305,282 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Cross-device media upload handler (Supabase Storage primary + server / compact image fallback)
+  const appendDiagnosticLog = React.useCallback(
+    (level: SupabaseDiagnosticLogEntry['level'], step: string, message: string) => {
+      setStorageDiagLogs((prev) => [
+        ...prev,
+        {
+          timestamp: new Date().toLocaleTimeString(),
+          level,
+          step,
+          message,
+        },
+      ]);
+    },
+    []
+  );
+
+  const activeSupabaseCfg = getSupabaseConfig();
+  const activeProjectId = activeSupabaseCfg.projectId;
+  const activeBucketName = activeSupabaseCfg.bucket;
+  const activeSupabaseUrl = activeSupabaseCfg.url;
+
+  const handleRunStorageDiagnostics = React.useCallback(async (overrideExpectedProjectId?: string) => {
+    setRunningDiagnostics(true);
+    try {
+      const targetExpectedId = (overrideExpectedProjectId ?? expectedProjectId).trim();
+      const report = await runSupabaseStorageDiagnostics(targetExpectedId);
+      setStorageDiagReport(report);
+      setStorageDiagLogs(report.logs);
+      if (report.bucketNotFound) {
+        setBucketNotFoundDetail(
+          report.errorMessage ||
+            `Bucket Not Found: "${report.bucketName}" does not exist on Supabase project "${report.configuredProjectId}".`
+        );
+        setHeroNeedsBucketSql(true);
+        showToast('Bucket Not Found on Supabase Storage');
+      } else if (!report.projectIdMatches) {
+        setBucketNotFoundDetail(null);
+        showToast('Supabase Project ID mismatch detected');
+      } else if (report.bucketExists) {
+        setBucketNotFoundDetail(null);
+        setHeroNeedsBucketSql(false);
+        showToast(`Supabase bucket "${report.bucketName}" connected & verified`);
+      } else {
+        showToast('Diagnostics completed with warnings');
+      }
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      appendDiagnosticLog('error', 'DIAGNOSTIC_ERROR', msg);
+      showToast('Failed to run Supabase Storage diagnostics');
+    } finally {
+      setRunningDiagnostics(false);
+    }
+  }, [expectedProjectId, appendDiagnosticLog]);
+
+  const handleVerifySupabaseKeys = async () => {
+    const rawUrl = sanitizePastedSupabaseUrl(formSettings.supabaseUrl ?? activeSupabaseUrl);
+    const rawKey = sanitizePastedCredential(formSettings.supabaseAnonKey ?? activeSupabaseCfg.anonKey);
+    const rawBucket = sanitizePastedBucketName(formSettings.supabaseBucket ?? activeBucketName);
+
+    const nextUrl = rawUrl || DEFAULT_SUPABASE_URL;
+    const nextKey = rawKey || DEFAULT_SUPABASE_ANON_KEY;
+    const nextBucket = rawBucket || DEFAULT_SUPABASE_BUCKET;
+
+    const secretCheck = isSecretSupabaseKey(nextKey);
+    if (secretCheck.isSecret) {
+      setApiKeyProtectionError(secretCheck.reason || 'Secret Supabase key blocked.');
+      showToast('Copy-paste protection: secret key blocked');
+      return;
+    }
+    if (!/^https:\/\/[a-z0-9.-]+/i.test(nextUrl)) {
+      setApiKeyProtectionError('Supabase Project URL must start with https:// (e.g. https://xyz.supabase.co).');
+      showToast('Invalid Supabase Project URL');
+      return;
+    }
+
+    setApiKeyProtectionError(null);
+    setVerifyingSupabaseKeys(true);
+    try {
+      const updatedCfg = updateSupabaseConfig({
+        url: nextUrl,
+        anonKey: nextKey,
+        bucket: nextBucket,
+      });
+      resetSupabaseBucketCache();
+      setExpectedProjectId(updatedCfg.projectId);
+
+      const verification = await verifySupabaseApiConnection(updatedCfg.projectId);
+      setApiVerificationResult(verification);
+      setStorageDiagReport(verification.diagnosticReport);
+      setStorageDiagLogs(verification.diagnosticReport.logs);
+
+      if (verification.bucketNotFound) {
+        setBucketNotFoundDetail(
+          verification.diagnosticReport.errorMessage ||
+            `Bucket Not Found: "${verification.bucketName}" does not exist on Supabase project "${verification.projectId}".`
+        );
+        setHeroNeedsBucketSql(true);
+      } else if (verification.bucketExists) {
+        setBucketNotFoundDetail(null);
+        setHeroNeedsBucketSql(false);
+      }
+
+      showToast(
+        verification.ok
+          ? `Verified connection to "${verification.projectId}"`
+          : verification.restAuthorized
+          ? `Key verified, bucket "${verification.bucketName}" needs attention`
+          : 'Supabase connection verification failed'
+      );
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      setApiKeyProtectionError(`Verification error: ${msg}`);
+      showToast('Failed to verify Supabase connection');
+    } finally {
+      setVerifyingSupabaseKeys(false);
+    }
+  };
+
+  const handleSaveSupabaseKeys = async () => {
+    const nextUrl = sanitizePastedSupabaseUrl(formSettings.supabaseUrl ?? activeSupabaseUrl) || DEFAULT_SUPABASE_URL;
+    const nextKey = sanitizePastedCredential(formSettings.supabaseAnonKey ?? activeSupabaseCfg.anonKey) || DEFAULT_SUPABASE_ANON_KEY;
+    const nextBucket = sanitizePastedBucketName(formSettings.supabaseBucket ?? activeBucketName) || DEFAULT_SUPABASE_BUCKET;
+
+    const secretCheck = isSecretSupabaseKey(nextKey);
+    if (secretCheck.isSecret) {
+      setApiKeyProtectionError(secretCheck.reason || 'Secret Supabase key blocked.');
+      showToast('Save blocked: do not save secret/service_role keys');
+      return;
+    }
+    if (!/^https:\/\/[a-z0-9.-]+/i.test(nextUrl)) {
+      setApiKeyProtectionError('Supabase Project URL must start with https:// (e.g. https://xyz.supabase.co).');
+      showToast('Invalid Supabase Project URL');
+      return;
+    }
+
+    setApiKeyProtectionError(null);
+    setSavingSupabaseKeys(true);
+    try {
+      const updatedCfg = updateSupabaseConfig({
+        url: nextUrl,
+        anonKey: nextKey,
+        bucket: nextBucket,
+      });
+      resetSupabaseBucketCache();
+      setExpectedProjectId(updatedCfg.projectId);
+
+      const mergedSettings: Settings = {
+        ...settingsRef.current,
+        ...formSettings,
+        supabaseUrl: updatedCfg.url,
+        supabaseAnonKey: updatedCfg.anonKey,
+        supabaseBucket: updatedCfg.bucket,
+      };
+      setRawFormSettings(mergedSettings);
+      setIsSettingsDirty(false);
+      lastSavedWhatsappRef.current = (mergedSettings.whatsappNumber || '').trim();
+
+      if (onSaveApiKeys) {
+        await onSaveApiKeys({
+          supabaseUrl: updatedCfg.url,
+          supabaseAnonKey: updatedCfg.anonKey,
+          supabaseBucket: updatedCfg.bucket,
+        });
+      } else {
+        await onSaveSettings(mergedSettings);
+      }
+
+      showToast('API Keys saved to Firestore settings/global!');
+      const verification = await verifySupabaseApiConnection(updatedCfg.projectId);
+      setApiVerificationResult(verification);
+      setStorageDiagReport(verification.diagnosticReport);
+      setStorageDiagLogs(verification.diagnosticReport.logs);
+    } catch (err) {
+      console.error('Failed to save Supabase keys:', err);
+      showToast('Failed to save Supabase keys to Firestore.');
+    } finally {
+      setSavingSupabaseKeys(false);
+    }
+  };
+
+  const handleResetSupabaseKeys = async () => {
+    setApiKeyProtectionError(null);
+    setSavingSupabaseKeys(true);
+    try {
+      const updatedCfg = updateSupabaseConfig({
+        url: DEFAULT_SUPABASE_URL,
+        anonKey: DEFAULT_SUPABASE_ANON_KEY,
+        bucket: DEFAULT_SUPABASE_BUCKET,
+      });
+      resetSupabaseBucketCache();
+      setExpectedProjectId(updatedCfg.projectId);
+      const mergedSettings: Settings = {
+        ...settingsRef.current,
+        ...formSettings,
+        supabaseUrl: updatedCfg.url,
+        supabaseAnonKey: updatedCfg.anonKey,
+        supabaseBucket: updatedCfg.bucket,
+      };
+      setRawFormSettings(mergedSettings);
+      setIsSettingsDirty(false);
+      lastSavedWhatsappRef.current = (mergedSettings.whatsappNumber || '').trim();
+
+      if (onSaveApiKeys) {
+        await onSaveApiKeys({
+          supabaseUrl: updatedCfg.url,
+          supabaseAnonKey: updatedCfg.anonKey,
+          supabaseBucket: updatedCfg.bucket,
+        });
+      } else {
+        await onSaveSettings(mergedSettings);
+      }
+      showToast('Reset API Keys to default project in Firestore');
+      const verification = await verifySupabaseApiConnection(updatedCfg.projectId);
+      setApiVerificationResult(verification);
+      setStorageDiagReport(verification.diagnosticReport);
+      setStorageDiagLogs(verification.diagnosticReport.logs);
+    } catch (err) {
+      console.error('Failed to reset Supabase keys:', err);
+      showToast('Failed to reset Supabase keys.');
+    } finally {
+      setSavingSupabaseKeys(false);
+    }
+  };
+
+  // Cross-device media upload handler (Supabase Storage primary when configured + chunked server / compact image fallback)
   const handleFileUpload = async (file: File): Promise<string> => {
-    const isVideo = file.type.startsWith('video/');
+    const isVideo = detectIsVideoFile(file);
+    const cfg = getSupabaseConfig();
+    setHeroUploadError(null);
+    setHeroNeedsBucketSql(false);
+    setBucketNotFoundDetail(null);
+    setUploadProgress(isVideo ? 1 : null);
+    appendDiagnosticLog(
+      'info',
+      'HERO_UPLOAD',
+      `Uploading "${file.name}" (${(file.size / (1024 * 1024)).toFixed(2)} MB, type: ${
+        file.type || 'unknown'
+      }) -> Project "${cfg.projectId}", Bucket "${cfg.bucket}"`
+    );
     showToast(isVideo ? 'Uploading video...' : 'Uploading photo...');
-    const result = await uploadMediaToSupabase(file, file.name);
+    const result = await uploadMediaToSupabase(file, file.name, {
+      onProgress: (pct) => setUploadProgress(pct),
+    });
+    setUploadProgress(null);
+
+    if (result.errorCode === 'BUCKET_NOT_FOUND') {
+      const detail =
+        result.bucketDiagnosticNote ||
+        `Bucket Not Found: Supabase Storage bucket "${cfg.bucket}" was not found on project "${cfg.projectId}".`;
+      setBucketNotFoundDetail(detail);
+      setHeroNeedsBucketSql(true);
+      appendDiagnosticLog('error', 'BUCKET_NOT_FOUND', detail);
+    }
+
     if (!result.url) {
       const msg = result.error || 'Upload failed. Please try a smaller file or paste an HTTPS link.';
       setHeroUploadError(msg);
-      showToast(msg);
+      setHeroNeedsBucketSql(Boolean(result.needsBucketSetup));
+      appendDiagnosticLog('error', 'HERO_UPLOAD', msg);
+      showToast(result.errorCode === 'BUCKET_NOT_FOUND' ? 'Bucket Not Found — see diagnostics' : msg);
       return '';
     }
     setHeroUploadError(null);
     if (result.source === 'supabase') {
+      setBucketNotFoundDetail(null);
+      setHeroNeedsBucketSql(false);
+      appendDiagnosticLog('success', 'HERO_UPLOAD', `Uploaded to Supabase Storage: ${result.url}`);
       showToast(`${isVideo ? 'Video' : 'Photo'} synced to Supabase`);
     } else if (result.source === 'server') {
-      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready`);
+      appendDiagnosticLog(
+        'warn',
+        'HERO_UPLOAD',
+        `Supabase bucket missing; stored via chunked app server fallback: ${result.url}`
+      );
+      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded via app server`);
     } else {
+      appendDiagnosticLog('info', 'HERO_UPLOAD', `Stored inline/optimized (${result.source})`);
       showToast('Photo optimized for cross-device sync');
     }
     return result.url;
@@ -427,6 +735,22 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
       sanitized.studioGallery = galleryState;
 
+      if (
+        sanitized.supabaseUrl !== undefined ||
+        sanitized.supabaseAnonKey !== undefined ||
+        sanitized.supabaseBucket !== undefined
+      ) {
+        const updatedCfg = updateSupabaseConfig({
+          url: sanitized.supabaseUrl,
+          anonKey: sanitized.supabaseAnonKey,
+          bucket: sanitized.supabaseBucket,
+        });
+        sanitized.supabaseUrl = updatedCfg.url;
+        sanitized.supabaseAnonKey = updatedCfg.anonKey;
+        sanitized.supabaseBucket = updatedCfg.bucket;
+        resetSupabaseBucketCache();
+      }
+
       await onSaveSettings(sanitized);
       lastSavedWhatsappRef.current = (sanitized.whatsappNumber || '').trim();
       setRawFormSettings(sanitized);
@@ -543,7 +867,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           </div>
         </div>
 
-        {/* Navigation Tabs (2x2 clean grid on mobile, underline tabs on desktop) */}
+        {/* Navigation Tabs */}
         <div className="grid grid-cols-2 gap-2 sm:flex sm:flex-wrap sm:items-center sm:gap-8 mb-8 md:mb-10 sm:border-b sm:border-zinc-200 text-[10px] sm:text-xs font-black uppercase tracking-[0.16em] sm:tracking-[0.2em]">
           <button
             onClick={() => setActiveTab('products')}
@@ -576,8 +900,18 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             Settings & Visuals
           </button>
           <button
+            onClick={() => setActiveTab('api-keys')}
+            className={`px-3 py-2.5 sm:px-0 sm:py-0 sm:pb-3 transition-colors relative text-center sm:text-left border sm:border-0 flex items-center justify-center sm:justify-start gap-1.5 ${
+              activeTab === 'api-keys'
+                ? 'bg-black text-white border-black sm:bg-transparent sm:text-black sm:border-b-2 sm:border-black'
+                : 'bg-white text-zinc-500 border-zinc-200 sm:bg-transparent sm:text-zinc-400 hover:text-black'
+            }`}
+          >
+            <KeyRound size={12} /> API Keys
+          </button>
+          <button
             onClick={() => setActiveTab('creators')}
-            className={`px-3 py-2.5 sm:px-0 sm:py-0 sm:pb-3 transition-colors relative text-center sm:text-left border sm:border-0 ${
+            className={`col-span-2 sm:col-span-1 px-3 py-2.5 sm:px-0 sm:py-0 sm:pb-3 transition-colors relative text-center sm:text-left border sm:border-0 ${
               activeTab === 'creators'
                 ? 'bg-black text-white border-black sm:bg-transparent sm:text-black sm:border-b-2 sm:border-black'
                 : 'bg-white text-zinc-500 border-zinc-200 sm:bg-transparent sm:text-zinc-400 hover:text-black'
@@ -1235,11 +1569,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
                 <div className="flex flex-wrap items-center gap-2 shrink-0">
                   <label className="bg-black text-white hover:bg-zinc-800 px-3.5 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center gap-1.5 whitespace-nowrap">
-                    <Upload size={12} /> {uploadingHeroMedia ? 'Uploading...' : 'Upload Photos / Videos'}
+                    <Upload size={12} />{' '}
+                    {uploadingHeroMedia
+                      ? uploadProgress !== null
+                        ? `Uploading ${uploadProgress}%`
+                        : 'Uploading...'
+                      : 'Upload Photos / Videos'}
                     <input
                       type="file"
                       multiple
-                      accept="image/*,video/*,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+                      accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.3gp,.mkv,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                       className="hidden"
                       disabled={uploadingHeroMedia}
                       onChange={async (e) => {
@@ -1277,17 +1616,94 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
+              {bucketNotFoundDetail && (
+                <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-black uppercase tracking-wider text-amber-900">
+                          Supabase Storage Error: Bucket Not Found (&quot;{activeBucketName}&quot;)
+                        </div>
+                        <p className="text-[11px] leading-relaxed">{bucketNotFoundDetail}</p>
+                        <div className="text-[10px] font-mono text-amber-800">
+                          Project ID: {activeProjectId} · Endpoint: {activeSupabaseUrl}/storage/v1
+                        </div>
+                      </div>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={() => setBucketNotFoundDetail(null)}
+                      className="text-amber-700 hover:text-amber-950 p-1 shrink-0"
+                      aria-label="Dismiss Bucket Not Found alert"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 pl-6">
+                    <button
+                      type="button"
+                      onClick={async () => {
+                        const sql = `insert into storage.buckets (id, name, public) values ('${activeBucketName}', '${activeBucketName}', true) on conflict (id) do update set public = true;\ndrop policy if exists "Public read media" on storage.objects;\ncreate policy "Public read media" on storage.objects for select using (bucket_id = '${activeBucketName}');\ndrop policy if exists "Public upload media" on storage.objects;\ncreate policy "Public upload media" on storage.objects for insert with check (bucket_id = '${activeBucketName}');\ndrop policy if exists "Public update media" on storage.objects;\ncreate policy "Public update media" on storage.objects for update using (bucket_id = '${activeBucketName}');`;
+                        try {
+                          await navigator.clipboard.writeText(sql);
+                          showToast('Copied Supabase media bucket SQL!');
+                        } catch {
+                          showToast('See supabase_schema.sql in project');
+                        }
+                      }}
+                      className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                    >
+                      <Copy size={12} /> Copy Supabase Media Bucket SQL
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => handleRunStorageDiagnostics()}
+                      disabled={runningDiagnostics}
+                      className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                    >
+                      <RefreshCw size={12} className={runningDiagnostics ? 'animate-spin' : ''} />
+                      Re-check Bucket
+                    </button>
+                  </div>
+                </div>
+              )}
+
               {heroUploadError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-center justify-between gap-2">
-                  <span>{heroUploadError}</span>
-                  <button
-                    type="button"
-                    onClick={() => setHeroUploadError(null)}
-                    className="text-rose-500 hover:text-rose-800 p-1"
-                    aria-label="Dismiss error"
-                  >
-                    <X size={14} />
-                  </button>
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs space-y-2">
+                  <div className="flex items-start justify-between gap-2">
+                    <span>{heroUploadError}</span>
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setHeroUploadError(null);
+                        setHeroNeedsBucketSql(false);
+                      }}
+                      className="text-rose-500 hover:text-rose-800 p-1 shrink-0"
+                      aria-label="Dismiss error"
+                    >
+                      <X size={14} />
+                    </button>
+                  </div>
+                  {heroNeedsBucketSql && !bucketNotFoundDetail && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          const sql = `insert into storage.buckets (id, name, public) values ('media', 'media', true) on conflict (id) do update set public = true;\ndrop policy if exists "Public read media" on storage.objects;\ncreate policy "Public read media" on storage.objects for select using (bucket_id = 'media');\ndrop policy if exists "Public upload media" on storage.objects;\ncreate policy "Public upload media" on storage.objects for insert with check (bucket_id = 'media');\ndrop policy if exists "Public update media" on storage.objects;\ncreate policy "Public update media" on storage.objects for update using (bucket_id = 'media');`;
+                          try {
+                            await navigator.clipboard.writeText(sql);
+                            showToast('Copied Supabase media bucket SQL!');
+                          } catch {
+                            showToast('See supabase_schema.sql in project');
+                          }
+                        }}
+                        className="bg-rose-700 hover:bg-rose-800 text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        <Copy size={12} /> Copy Supabase Media Bucket SQL
+                      </button>
+                    </div>
+                  )}
                 </div>
               )}
 
@@ -1382,7 +1798,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             <Upload size={12} /> Replace File
                             <input
                               type="file"
-                              accept="image/*,video/*,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
+                              accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.3gp,.mkv,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                               className="hidden"
                               onChange={async (e) => {
                                 const file = e.target.files?.[0];
@@ -1606,6 +2022,167 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     />
                   </label>
                 </div>
+              </div>
+
+              {/* API Keys Quick Link inside Settings & Visuals */}
+              <div className="pt-4 border-t border-zinc-100 flex flex-col sm:flex-row sm:items-center justify-between gap-3 bg-zinc-50 border border-zinc-200 p-3.5">
+                <div>
+                  <h4 className="text-[11px] font-black uppercase tracking-widest flex items-center gap-1.5 text-zinc-900">
+                    <KeyRound size={13} /> API Keys &amp; Supabase Credentials
+                  </h4>
+                  <p className="text-[11px] text-zinc-500 mt-0.5 font-mono">
+                    Project: <span className="font-bold text-zinc-800">{activeProjectId}</span> · Bucket:{' '}
+                    <span className="font-bold text-zinc-800">{activeBucketName}</span>
+                  </p>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setActiveTab('api-keys')}
+                  className="bg-black hover:bg-zinc-800 text-white px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors shrink-0 whitespace-nowrap"
+                >
+                  <KeyRound size={12} /> Open API Keys Section
+                </button>
+              </div>
+
+              {/* Supabase Storage Connectivity & Bucket Diagnostic Logs */}
+              <div className="pt-4 border-t border-zinc-100 space-y-3">
+                <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                  <div>
+                    <h4 className="text-[11px] font-black uppercase tracking-widest flex items-center gap-1.5 text-zinc-800">
+                      <Terminal size={13} /> Supabase Storage Diagnostics &amp; Bucket Validation
+                    </h4>
+                    <p className="text-[11px] text-zinc-500 mt-0.5">
+                      Verify Supabase Storage connectivity, validate bucket &quot;{activeBucketName}&quot; against your Supabase Project ID, and print live diagnostic logs.
+                    </p>
+                  </div>
+                  <div className="flex flex-wrap items-center gap-2 shrink-0">
+                    <button
+                      type="button"
+                      onClick={() => handleRunStorageDiagnostics()}
+                      disabled={runningDiagnostics}
+                      className="bg-zinc-900 hover:bg-black text-white px-3.5 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <RefreshCw size={12} className={runningDiagnostics ? 'animate-spin' : ''} />
+                      {runningDiagnostics ? 'Testing...' : 'Run Storage Diagnostics'}
+                    </button>
+                    {storageDiagLogs.length > 0 && (
+                      <>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            const text = storageDiagLogs
+                              .map((l) => `[${l.timestamp}] [${l.level.toUpperCase()}] [${l.step}] ${l.message}`)
+                              .join('\n');
+                            try {
+                              await navigator.clipboard.writeText(text);
+                              showToast('Diagnostic logs copied!');
+                            } catch {
+                              showToast('Unable to copy logs');
+                            }
+                          }}
+                          className="border border-zinc-200 hover:border-black px-2.5 py-2 text-[10px] font-black uppercase tracking-widest text-zinc-700 flex items-center gap-1 whitespace-nowrap"
+                        >
+                          <Copy size={11} /> Copy Logs
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setStorageDiagLogs([]);
+                            setStorageDiagReport(null);
+                          }}
+                          className="border border-zinc-200 hover:border-black px-2.5 py-2 text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black whitespace-nowrap"
+                        >
+                          Clear
+                        </button>
+                      </>
+                    )}
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-3 bg-zinc-50 border border-zinc-200 p-3 text-xs">
+                  <div>
+                    <label className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
+                      Expected Supabase Project ID
+                    </label>
+                    <input
+                      type="text"
+                      value={expectedProjectId}
+                      onChange={(e) => setExpectedProjectId(e.target.value)}
+                      placeholder={activeProjectId}
+                      className="w-full border border-zinc-200 bg-white px-2.5 py-1.5 text-xs font-mono focus:outline-none focus:border-black"
+                    />
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
+                      Active Storage Config
+                    </span>
+                    <div className="font-mono text-[11px] text-zinc-800 break-all">
+                      project: <span className="font-bold">{activeProjectId}</span>
+                      <br />
+                      bucket: <span className="font-bold">{activeBucketName}</span>
+                    </div>
+                  </div>
+                  <div>
+                    <span className="text-[9px] font-black uppercase tracking-widest text-zinc-400 block mb-1">
+                      Validation Status
+                    </span>
+                    {storageDiagReport ? (
+                      <div className="text-[11px] font-mono space-y-0.5">
+                        <div
+                          className={
+                            storageDiagReport.projectIdMatches
+                              ? 'text-emerald-700 font-bold'
+                              : 'text-rose-600 font-bold'
+                          }
+                        >
+                          Project Match: {storageDiagReport.projectIdMatches ? 'VALID' : 'MISMATCH'}
+                        </div>
+                        <div
+                          className={
+                            storageDiagReport.bucketExists
+                              ? 'text-emerald-700 font-bold'
+                              : 'text-amber-700 font-bold'
+                          }
+                        >
+                          Bucket ({storageDiagReport.bucketName}):{' '}
+                          {storageDiagReport.bucketExists
+                            ? 'CONNECTED'
+                            : storageDiagReport.bucketNotFound
+                            ? 'BUCKET NOT FOUND'
+                            : 'UNREACHABLE'}
+                        </div>
+                      </div>
+                    ) : (
+                      <div className="text-[11px] font-mono text-zinc-500">
+                        {expectedProjectId.trim().toLowerCase() === activeProjectId.toLowerCase()
+                          ? 'Project ID matches config · Click Run to probe bucket'
+                          : 'Project ID mismatch with config'}
+                      </div>
+                    )}
+                  </div>
+                </div>
+
+                {storageDiagLogs.length > 0 && (
+                  <div className="bg-zinc-950 text-zinc-100 border border-zinc-800 p-3 font-mono text-[11px] max-h-56 overflow-y-auto space-y-1">
+                    {storageDiagLogs.map((entry, idx) => (
+                      <div
+                        key={idx}
+                        className={
+                          entry.level === 'error'
+                            ? 'text-rose-400'
+                            : entry.level === 'warn'
+                            ? 'text-amber-300'
+                            : entry.level === 'success'
+                            ? 'text-emerald-400'
+                            : 'text-zinc-300'
+                        }
+                      >
+                        <span className="text-zinc-500">[{entry.timestamp}]</span>{' '}
+                        <span className="font-bold">[{entry.step}]</span> {entry.message}
+                      </div>
+                    ))}
+                  </div>
+                )}
               </div>
 
               <div className="pt-4 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-3">
@@ -1913,6 +2490,322 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </button>
             </div>
           </form>
+        )}
+
+        {/* Tab 3: API Keys Section (Supabase URL, Anon Key & Bucket -> Firestore settings/global) */}
+        {activeTab === 'api-keys' && (
+          <section aria-label="API Keys" className="space-y-6">
+            <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-4 pb-4 border-b border-zinc-200">
+              <div>
+                <h2 className="text-lg sm:text-xl font-black uppercase tracking-tight flex items-center gap-2">
+                  <KeyRound size={18} /> API Keys
+                </h2>
+                <p className="text-xs text-zinc-500 mt-1">
+                  Configure your Supabase URL, Anon Key, and Storage Bucket name and save directly to the Firestore <code className="font-mono">settings/global</code> document.
+                </p>
+              </div>
+              <div className="flex flex-wrap items-center gap-2 shrink-0">
+                <button
+                  type="button"
+                  onClick={handleVerifySupabaseKeys}
+                  disabled={verifyingSupabaseKeys || savingSupabaseKeys}
+                  className="border border-black bg-white hover:bg-zinc-100 text-black px-4 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                >
+                  <RefreshCw size={13} className={verifyingSupabaseKeys ? 'animate-spin' : ''} />
+                  {verifyingSupabaseKeys ? 'Verifying...' : 'Verify'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleSaveSupabaseKeys}
+                  disabled={savingSupabaseKeys || verifyingSupabaseKeys}
+                  className="bg-black hover:bg-zinc-800 text-white px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap shadow-sm"
+                >
+                  <Database size={13} />
+                  {savingSupabaseKeys ? 'Saving...' : 'Save to Firestore'}
+                </button>
+                <button
+                  type="button"
+                  onClick={handleResetSupabaseKeys}
+                  disabled={savingSupabaseKeys || verifyingSupabaseKeys}
+                  className="border border-zinc-200 hover:border-black px-3.5 py-2.5 text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:text-black transition-colors whitespace-nowrap"
+                >
+                  Reset Defaults
+                </button>
+              </div>
+            </div>
+
+            {apiKeyProtectionError && (
+              <div className="p-3.5 bg-rose-50 border border-rose-300 text-rose-900 text-xs flex items-start justify-between gap-3">
+                <div className="flex items-start gap-2.5">
+                  <ShieldAlert size={16} className="text-rose-600 shrink-0 mt-0.5" />
+                  <div>
+                    <p className="font-black uppercase tracking-wider text-[11px]">Copy-Paste Protection Blocked Input</p>
+                    <p className="mt-0.5 text-rose-800">{apiKeyProtectionError}</p>
+                  </div>
+                </div>
+                <button
+                  type="button"
+                  onClick={() => setApiKeyProtectionError(null)}
+                  className="text-rose-500 hover:text-rose-900 p-1 shrink-0"
+                  aria-label="Dismiss protection alert"
+                >
+                  <X size={14} />
+                </button>
+              </div>
+            )}
+
+            <div className="bg-white border border-zinc-200 p-4 sm:p-6 space-y-5 shadow-sm">
+              <div className="flex flex-wrap items-center justify-between gap-2 pb-3 border-b border-zinc-100">
+                <div className="flex items-center gap-2 text-[11px] font-black uppercase tracking-widest text-zinc-800">
+                  <ShieldCheck size={14} className="text-emerald-600" />
+                  Copy-Paste Protected Supabase Credentials
+                </div>
+                <span className="text-[10px] font-mono text-zinc-500">
+                  Masked copy/cut lock active · Secret <code className="text-zinc-700">service_role</code> keys rejected
+                </span>
+              </div>
+
+              <div className="grid grid-cols-1 lg:grid-cols-12 gap-4">
+                {/* Supabase Project URL */}
+                <div className="lg:col-span-5">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1.5">
+                    Supabase Project URL
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type="url"
+                      autoComplete="off"
+                      spellCheck={false}
+                      value={formSettings.supabaseUrl ?? activeSupabaseUrl}
+                      placeholder="https://your-project-id.supabase.co"
+                      onPaste={(e) => {
+                        e.preventDefault();
+                        const raw = e.clipboardData.getData('text');
+                        const cleaned = sanitizePastedSupabaseUrl(raw);
+                        if (cleaned) {
+                          setApiKeyProtectionError(null);
+                          setFormSettings({ ...formSettings, supabaseUrl: cleaned });
+                          const parsedId = extractSupabaseProjectId(cleaned);
+                          if (parsedId) setExpectedProjectId(parsedId);
+                          showToast('Sanitized & pasted Supabase URL');
+                        }
+                      }}
+                      onChange={(e) => {
+                        const nextUrl = e.target.value;
+                        setApiKeyProtectionError(null);
+                        setFormSettings({ ...formSettings, supabaseUrl: nextUrl });
+                        const parsedId = extractSupabaseProjectId(nextUrl);
+                        if (parsedId) setExpectedProjectId(parsedId);
+                      }}
+                      className="flex-1 min-w-0 border border-zinc-200 bg-zinc-50 focus:bg-white px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-black"
+                    />
+                    <button
+                      type="button"
+                      title="Paste & sanitize Supabase URL"
+                      onClick={async () => {
+                        try {
+                          const text = sanitizePastedSupabaseUrl(await navigator.clipboard.readText());
+                          if (text) {
+                            setApiKeyProtectionError(null);
+                            setFormSettings({ ...formSettings, supabaseUrl: text });
+                            const parsedId = extractSupabaseProjectId(text);
+                            if (parsedId) setExpectedProjectId(parsedId);
+                            showToast('Pasted Supabase URL');
+                          }
+                        } catch {
+                          showToast('Paste URL directly into the box');
+                        }
+                      }}
+                      className="border border-zinc-200 bg-white hover:border-black p-2.5 text-zinc-600 hover:text-black shrink-0"
+                    >
+                      <ClipboardPaste size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Supabase Anon Key with Copy-Paste Protection */}
+                <div className="lg:col-span-5">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 flex items-center justify-between gap-2 mb-1.5">
+                    <span>Supabase Anon / Publishable Key</span>
+                    <span className="text-[9px] font-mono text-zinc-400">
+                      {showSupabaseAnonKey ? 'Visible' : 'Copy-Locked'}
+                    </span>
+                  </label>
+                  <div className="flex items-center gap-1">
+                    <input
+                      type={showSupabaseAnonKey ? 'text' : 'password'}
+                      autoComplete="off"
+                      spellCheck={false}
+                      autoCorrect="off"
+                      autoCapitalize="off"
+                      data-lpignore="true"
+                      value={formSettings.supabaseAnonKey ?? activeSupabaseCfg.anonKey}
+                      placeholder="sb_publishable_... or eyJ..."
+                      onCopy={(e) => {
+                        if (!showSupabaseAnonKey) {
+                          e.preventDefault();
+                          showToast('Copy blocked while key is hidden — click Reveal to copy');
+                        }
+                      }}
+                      onCut={(e) => {
+                        if (!showSupabaseAnonKey) {
+                          e.preventDefault();
+                          showToast('Cut blocked while key is hidden');
+                        }
+                      }}
+                      onDragStart={(e) => {
+                        if (!showSupabaseAnonKey) e.preventDefault();
+                      }}
+                      onContextMenu={(e) => {
+                        if (!showSupabaseAnonKey) e.preventDefault();
+                      }}
+                      onPaste={(e) => {
+                        e.preventDefault();
+                        const raw = e.clipboardData.getData('text');
+                        const cleaned = sanitizePastedCredential(raw);
+                        if (!cleaned) return;
+                        const secretCheck = isSecretSupabaseKey(cleaned);
+                        if (secretCheck.isSecret) {
+                          setApiKeyProtectionError(secretCheck.reason || 'Blocked secret key.');
+                          showToast('Copy-paste protection: secret key blocked');
+                          return;
+                        }
+                        setApiKeyProtectionError(null);
+                        setFormSettings({ ...formSettings, supabaseAnonKey: cleaned });
+                        showToast('Sanitized & pasted public Anon Key');
+                      }}
+                      onChange={(e) => {
+                        const val = e.target.value;
+                        const secretCheck = isSecretSupabaseKey(val);
+                        if (secretCheck.isSecret) {
+                          setApiKeyProtectionError(secretCheck.reason || 'Blocked secret key.');
+                          return;
+                        }
+                        setApiKeyProtectionError(null);
+                        setFormSettings({ ...formSettings, supabaseAnonKey: val });
+                      }}
+                      className={`flex-1 min-w-0 border border-zinc-200 bg-zinc-50 focus:bg-white px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-black ${
+                        !showSupabaseAnonKey ? 'select-none' : ''
+                      }`}
+                    />
+                    <button
+                      type="button"
+                      title={showSupabaseAnonKey ? 'Hide & lock copy' : 'Reveal key'}
+                      onClick={() => setShowSupabaseAnonKey((v) => !v)}
+                      className="border border-zinc-200 bg-white hover:border-black p-2.5 text-zinc-600 hover:text-black shrink-0"
+                    >
+                      {showSupabaseAnonKey ? <EyeOff size={14} /> : <Eye size={14} />}
+                    </button>
+                    <button
+                      type="button"
+                      title="Paste & validate Anon Key"
+                      onClick={async () => {
+                        try {
+                          const text = sanitizePastedCredential(await navigator.clipboard.readText());
+                          if (!text) return;
+                          const secretCheck = isSecretSupabaseKey(text);
+                          if (secretCheck.isSecret) {
+                            setApiKeyProtectionError(secretCheck.reason || 'Blocked secret key.');
+                            showToast('Copy-paste protection: secret key blocked');
+                            return;
+                          }
+                          setApiKeyProtectionError(null);
+                          setFormSettings({ ...formSettings, supabaseAnonKey: text });
+                          showToast('Pasted Supabase Anon Key');
+                        } catch {
+                          showToast('Paste key directly into the box');
+                        }
+                      }}
+                      className="border border-zinc-200 bg-white hover:border-black p-2.5 text-zinc-600 hover:text-black shrink-0"
+                    >
+                      <ClipboardPaste size={14} />
+                    </button>
+                  </div>
+                </div>
+
+                {/* Storage Bucket Name */}
+                <div className="lg:col-span-2">
+                  <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block mb-1.5">
+                    Storage Bucket
+                  </label>
+                  <input
+                    type="text"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={formSettings.supabaseBucket ?? activeBucketName}
+                    placeholder="media"
+                    onPaste={(e) => {
+                      e.preventDefault();
+                      const cleaned = sanitizePastedBucketName(e.clipboardData.getData('text'));
+                      if (cleaned) {
+                        setFormSettings({ ...formSettings, supabaseBucket: cleaned });
+                        showToast('Sanitized & pasted bucket name');
+                      }
+                    }}
+                    onChange={(e) =>
+                      setFormSettings({ ...formSettings, supabaseBucket: e.target.value })
+                    }
+                    className="w-full border border-zinc-200 bg-zinc-50 focus:bg-white px-3 py-2.5 text-xs font-mono focus:outline-none focus:border-black"
+                  />
+                </div>
+              </div>
+
+              {/* Verification Status Panel */}
+              {apiVerificationResult && (
+                <div
+                  className={`p-3.5 border text-xs space-y-2 ${
+                    apiVerificationResult.ok
+                      ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
+                      : apiVerificationResult.bucketNotFound
+                      ? 'bg-amber-50 border-amber-300 text-amber-950'
+                      : 'bg-rose-50 border-rose-200 text-rose-950'
+                  }`}
+                >
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="flex items-center gap-2 font-black uppercase tracking-wider text-[11px]">
+                      {apiVerificationResult.ok ? (
+                        <CheckCircle2 size={15} className="text-emerald-600 shrink-0" />
+                      ) : (
+                        <AlertTriangle size={15} className="text-amber-600 shrink-0" />
+                      )}
+                      <span>{apiVerificationResult.summary}</span>
+                    </div>
+                    <span className="font-mono text-[10px] uppercase">
+                      REST Auth: {apiVerificationResult.restAuthorized ? 'OK' : 'FAILED'} · Bucket:{' '}
+                      {apiVerificationResult.bucketExists
+                        ? 'CONNECTED'
+                        : apiVerificationResult.bucketNotFound
+                        ? 'BUCKET NOT FOUND'
+                        : 'ERROR'}
+                    </span>
+                  </div>
+                </div>
+              )}
+
+              {/* Live Connection & Storage Logs */}
+              {storageDiagLogs.length > 0 && (
+                <div className="bg-zinc-950 text-zinc-100 border border-zinc-800 p-3 font-mono text-[11px] max-h-56 overflow-y-auto space-y-1">
+                  {storageDiagLogs.map((entry, idx) => (
+                    <div
+                      key={idx}
+                      className={
+                        entry.level === 'error'
+                          ? 'text-rose-400'
+                          : entry.level === 'warn'
+                          ? 'text-amber-300'
+                          : entry.level === 'success'
+                          ? 'text-emerald-400'
+                          : 'text-zinc-300'
+                      }
+                    >
+                      <span className="text-zinc-500">[{entry.timestamp}]</span>{' '}
+                      <span className="font-bold">[{entry.step}]</span> {entry.message}
+                    </div>
+                  ))}
+                </div>
+              )}
+            </div>
+          </section>
         )}
 
         {/* Product Add / Edit Modal */}
@@ -2355,7 +3248,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               setFormCreatorPost({
                                 ...formCreatorPost,
                                 mediaUrl: url,
-                                isVideo: file.type.startsWith('video/'),
+                                isVideo: detectIsVideoFile(file),
                               });
                             }
                           }

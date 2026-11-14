@@ -29,6 +29,8 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
   const [submittedWhatsappUrl, setSubmittedWhatsappUrl] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
+  const [uploadPercent, setUploadPercent] = useState<number | null>(null);
+
   if (!isOpen) return null;
 
   const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -36,8 +38,11 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
     if (!file) return;
     setErrorMessage(null);
     setIsUploadingMedia(true);
+    setUploadPercent(0);
     try {
-      const uploadRes = await uploadMediaToSupabase(file, file.name);
+      const uploadRes = await uploadMediaToSupabase(file, file.name, {
+        onProgress: (pct) => setUploadPercent(pct),
+      });
       if (uploadRes.url) {
         setMediaUrl(uploadRes.url);
       } else {
@@ -47,6 +52,7 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
       setErrorMessage('Failed to upload media file.');
     } finally {
       setIsUploadingMedia(false);
+      setUploadPercent(null);
     }
   };
 
@@ -219,7 +225,13 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
                     />
                   </label>
                   <span className="text-[10px] text-white/40 truncate">
-                    {isUploadingMedia ? 'Uploading & syncing media...' : mediaUrl ? 'Media Loaded Ready' : 'PNG, JPG, MP4 supported'}
+                    {isUploadingMedia
+                      ? uploadPercent !== null
+                        ? `Uploading media... ${uploadPercent}%`
+                        : 'Uploading & syncing media...'
+                      : mediaUrl
+                      ? 'Media Loaded Ready'
+                      : 'PNG, JPG, MP4 supported'}
                   </span>
                 </div>
                 <input

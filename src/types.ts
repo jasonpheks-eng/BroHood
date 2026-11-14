@@ -125,6 +125,9 @@ export interface Settings {
   aboutUsText?: string;
   whatsappNumber?: string;
   socialLinks?: SocialLinkItem[];
+  supabaseUrl?: string;
+  supabaseAnonKey?: string;
+  supabaseBucket?: string;
 }
 
 export interface CartItem extends Product {

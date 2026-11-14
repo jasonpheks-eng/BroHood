@@ -72,7 +72,7 @@ import { Storefront } from './components/store/Storefront';
 import { ShopLayout } from './components/shop/ShopLayout';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { AdminLoginModal } from './components/admin/AdminLoginModal';
-import { supabase } from './supabase';
+import { getSupabaseClient, updateSupabaseConfig } from './supabase';
 import {
   syncProductToSupabase,
   deleteProductFromSupabase,
@@ -364,6 +364,13 @@ export default function App() {
             setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
           }
           setSettings(merged);
+          if (merged.supabaseUrl || merged.supabaseAnonKey || merged.supabaseBucket) {
+            updateSupabaseConfig({
+              url: merged.supabaseUrl,
+              anonKey: merged.supabaseAnonKey,
+              bucket: merged.supabaseBucket,
+            });
+          }
           try {
             if (merged.whatsappNumber) {
               localStorage.setItem('brotherhood_whatsapp_number', merged.whatsappNumber);
@@ -495,7 +502,7 @@ export default function App() {
     };
     hydrateFromSupabase();
 
-    const supaChannel = supabase
+    const supaChannel = getSupabaseClient()
       .channel('brotherhood-storefront-sync')
       .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
         fetchSupabaseData().then((supa) => {
@@ -533,7 +540,7 @@ export default function App() {
       if (unsubProductsFallback) unsubProductsFallback();
       unsubCreators();
       if (unsubCreatorsFallback) unsubCreatorsFallback();
-      supabase.removeChannel(supaChannel);
+      getSupabaseClient().removeChannel(supaChannel);
     };
   }, []);
 
@@ -624,6 +631,17 @@ export default function App() {
   const handleSaveSettings = async (newSettings: Settings) => {
     const cleanSettings = stripUndefined(newSettings);
     setSettings((prev) => ({ ...prev, ...cleanSettings }));
+    if (
+      (cleanSettings as Settings).supabaseUrl !== undefined ||
+      (cleanSettings as Settings).supabaseAnonKey !== undefined ||
+      (cleanSettings as Settings).supabaseBucket !== undefined
+    ) {
+      updateSupabaseConfig({
+        url: (cleanSettings as Settings).supabaseUrl,
+        anonKey: (cleanSettings as Settings).supabaseAnonKey,
+        bucket: (cleanSettings as Settings).supabaseBucket,
+      });
+    }
     try {
       if ((cleanSettings as Settings).whatsappNumber !== undefined) {
         if ((cleanSettings as Settings).whatsappNumber) {
@@ -658,6 +676,30 @@ export default function App() {
     try {
       await setDoc(doc(db, 'settings', 'global'), { whatsappNumber: cleanNumber }, { merge: true });
       await syncSettingsToSupabase(updatedSettings);
+    } catch (error) {
+      handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
+    }
+  };
+
+  const handleSaveApiKeys = async (keys: {
+    supabaseUrl: string;
+    supabaseAnonKey: string;
+    supabaseBucket: string;
+  }) => {
+    const updatedCfg = updateSupabaseConfig({
+      url: keys.supabaseUrl,
+      anonKey: keys.supabaseAnonKey,
+      bucket: keys.supabaseBucket,
+    });
+    const normalizedPayload = {
+      supabaseUrl: updatedCfg.url,
+      supabaseAnonKey: updatedCfg.anonKey,
+      supabaseBucket: updatedCfg.bucket,
+    };
+    setSettings((prev) => ({ ...prev, ...normalizedPayload }));
+    try {
+      await setDoc(doc(db, 'settings', 'global'), normalizedPayload, { merge: true });
+      await syncSettingsToSupabase({ ...settings, ...normalizedPayload });
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
     }
@@ -780,6 +822,7 @@ export default function App() {
               onDeleteProduct={handleDeleteProduct}
               onSaveSettings={handleSaveSettings}
               onSaveWhatsappNumber={handleSaveWhatsappNumber}
+              onSaveApiKeys={handleSaveApiKeys}
               onSaveCreatorPost={handleSaveCreatorPost}
               onDeleteCreatorPost={handleDeleteCreatorPost}
               onBackToStore={() => {

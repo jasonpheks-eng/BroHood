@@ -2,7 +2,6 @@ import React from 'react';
 import { ShoppingBag, Settings as SettingsIcon, Menu, X } from 'lucide-react';
 import { Settings } from '../../types';
 import { ResolvedImage } from './ResolvedMedia';
-import { cn } from '../../utils';
 
 interface NavbarProps {
   settings: Settings;
@@ -24,37 +23,6 @@ export const Navbar: React.FC<NavbarProps> = ({
   onRequireAdminAuth,
 }) => {
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
-  const [isHovered, setIsHovered] = React.useState(false);
-  const [isVisible, setIsVisible] = React.useState(true);
-  const hideTimerRef = React.useRef<any>(null);
-
-  const startHideTimer = React.useCallback(() => {
-    if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    if (mobileMenuOpen || isHovered) return;
-    hideTimerRef.current = setTimeout(() => {
-      if (!isHovered && !mobileMenuOpen) {
-        setIsVisible(false);
-      }
-    }, 3000);
-  }, [mobileMenuOpen, isHovered]);
-
-  React.useEffect(() => {
-    // Show initially, then start 3s hide timer
-    setIsVisible(true);
-    startHideTimer();
-    return () => {
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-    };
-  }, [startHideTimer]);
-
-  React.useEffect(() => {
-    if (mobileMenuOpen) {
-      if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-      setIsVisible(true);
-    } else {
-      startHideTimer();
-    }
-  }, [mobileMenuOpen, startHideTimer]);
 
   const handleNavClick = (target: string) => {
     setMobileMenuOpen(false);
@@ -96,21 +64,7 @@ export const Navbar: React.FC<NavbarProps> = ({
   };
 
   return (
-    <header
-      onMouseEnter={() => {
-        setIsHovered(true);
-        setIsVisible(true);
-        if (hideTimerRef.current) clearTimeout(hideTimerRef.current);
-      }}
-      onMouseLeave={() => {
-        setIsHovered(false);
-        startHideTimer();
-      }}
-      className={cn(
-        'sticky top-0 z-[120] bg-white/95 backdrop-blur-md border-b border-zinc-200 transition-transform duration-300 ease-in-out',
-        isVisible ? 'translate-y-0' : '-translate-y-full'
-      )}
-    >
+    <header className="sticky top-0 z-[120] bg-white/95 backdrop-blur-md border-b border-zinc-200">
       <div className="max-w-[1600px] mx-auto px-6 lg:px-12 h-20 flex items-center justify-between gap-8">
         {/* Zone 1: Brand Wordmark */}
         <button

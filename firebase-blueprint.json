@@ -16,6 +16,9 @@
         "aboutUsText": { "type": "string", "maxLength": 2000 },
         "whatsappNumber": { "type": "string", "maxLength": 32 },
         "socialLinks": { "type": "array", "description": "Customizable social media tags and pasted profile links." },
+        "supabaseUrl": { "type": "string", "maxLength": 300 },
+        "supabaseAnonKey": { "type": "string", "maxLength": 600 },
+        "supabaseBucket": { "type": "string", "maxLength": 120 },
         "studioGallery": {
           "type": "object",
           "$ref": "#/entities/StudioGallery",
