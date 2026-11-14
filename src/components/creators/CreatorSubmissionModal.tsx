@@ -1,7 +1,8 @@
 import React, { useState } from 'react';
-import { X, Upload, CheckCircle2, User, AtSign, MessageSquare, Tag, MessageCircle } from 'lucide-react';
+import { X, Upload, CheckCircle2, User, AtSign, MessageSquare, Tag, MessageCircle, ExternalLink } from 'lucide-react';
 import { Product, CreatorPost, Settings } from '../../types';
-import { formatWhatsAppDigits } from '../../utils';
+import { resolveStoreWhatsAppDigits, buildWhatsAppDirectUrl } from '../../utils';
+import { uploadMediaToSupabase } from '../../supabaseSync';
 
 interface CreatorSubmissionModalProps {
   isOpen: boolean;
@@ -23,23 +24,29 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
   const [caption, setCaption] = useState('');
   const [selectedProductId, setSelectedProductId] = useState('');
   const [isSubmitting, setIsSubmitting] = useState(false);
+  const [isUploadingMedia, setIsUploadingMedia] = useState(false);
   const [isSuccess, setIsSuccess] = useState(false);
+  const [submittedWhatsappUrl, setSubmittedWhatsappUrl] = useState('');
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
 
   if (!isOpen) return null;
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+  const handleFileChange = async (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];
-    if (file) {
-      setErrorMessage(null);
-      const reader = new FileReader();
-      reader.onload = async (event) => {
-        if (event.target?.result) {
-          const result = event.target.result as string;
-          setMediaUrl(result);
-        }
-      };
-      reader.readAsDataURL(file);
+    if (!file) return;
+    setErrorMessage(null);
+    setIsUploadingMedia(true);
+    try {
+      const uploadRes = await uploadMediaToSupabase(file, file.name);
+      if (uploadRes.url) {
+        setMediaUrl(uploadRes.url);
+      } else {
+        setErrorMessage(uploadRes.error || 'Could not process media file.');
+      }
+    } catch {
+      setErrorMessage('Failed to upload media file.');
+    } finally {
+      setIsUploadingMedia(false);
     }
   };
 
@@ -49,10 +56,13 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
 
     setIsSubmitting(true);
     setErrorMessage(null);
-    const formattedHandle = handle.startsWith('@' ) ? handle : `@${handle}`;
+    const formattedHandle = handle.startsWith('@') ? handle : `@${handle}`;
     const matchedProduct = products.find((p) => p.id === selectedProductId);
 
-    const whatsappDigits = formatWhatsAppDigits(settings.whatsappNumber);
+    const whatsappDigits = resolveStoreWhatsAppDigits(settings);
+    const cleanMediaNote = mediaUrl.startsWith('data:')
+      ? '[Uploaded photo attached in portal]'
+      : mediaUrl.trim();
     const orderLines = [
       `*New Creator Fit Submission — ${settings.brandName || 'BROTHERHOOD'}*`,
       '',
@@ -60,30 +70,33 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
       `Handle: ${formattedHandle.trim()}`,
       `Caption: ${caption.trim() || 'None'}`,
       `Tagged Garment: ${matchedProduct ? matchedProduct.name : 'None'}`,
-      `Media URL/File: ${mediaUrl.trim()}`,
+      `Media URL/File: ${cleanMediaNote}`,
       '',
       `_Please verify this fit and add it in the Admin panel._`,
     ];
     const whatsappText = orderLines.join('\n');
-    const whatsappUrl = whatsappDigits
-      ? `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(whatsappText)}`
-      : `https://wa.me/?text=${encodeURIComponent(whatsappText)}`;
+    const whatsappUrl = buildWhatsAppDirectUrl(whatsappDigits, whatsappText);
+
+    if (!whatsappUrl) {
+      setErrorMessage('Store WhatsApp number is not configured in Admin Settings yet.');
+      setIsSubmitting(false);
+      return;
+    }
 
     try {
-      window.open(whatsappUrl, '_blank');
+      setSubmittedWhatsappUrl(whatsappUrl);
+      const linkEl = document.createElement('a');
+      linkEl.href = whatsappUrl;
+      linkEl.target = '_blank';
+      linkEl.rel = 'noopener noreferrer';
+      document.body.appendChild(linkEl);
+      linkEl.click();
+      document.body.removeChild(linkEl);
+
       setIsSuccess(true);
-      setTimeout(() => {
-        setIsSuccess(false);
-        onClose();
-        setCreatorName('');
-        setHandle('');
-        setMediaUrl('');
-        setCaption('');
-        setSelectedProductId('');
-      }, 2200);
     } catch (err) {
       console.error('Failed to send creator submission to WhatsApp:', err);
-      setErrorMessage('Could not open WhatsApp. Please ensure popups are allowed.');
+      setErrorMessage('Could not open WhatsApp. Use the button below to send manually.');
     } finally {
       setIsSubmitting(false);
     }
@@ -93,7 +106,10 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
     <div className="fixed inset-0 z-[150] flex items-center justify-center p-4 sm:p-6 bg-black/80 backdrop-blur-md animate-in fade-in duration-200">
       <div className="relative w-full max-w-lg bg-zinc-900 border border-white/20 p-6 sm:p-8 text-white shadow-2xl overflow-hidden rounded-none">
         <button
-          onClick={onClose}
+          onClick={() => {
+            setIsSuccess(false);
+            onClose();
+          }}
           className="absolute top-4 right-4 p-2 text-white/60 hover:text-white transition-colors"
           aria-label="Close modal"
         >
@@ -101,12 +117,41 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
         </button>
 
         {isSuccess ? (
-          <div className="py-12 text-center space-y-4">
-            <CheckCircle2 size={56} className="mx-auto text-emerald-400 animate-bounce" />
-            <h3 className="text-2xl font-black uppercase tracking-tight">Submitted to CEO</h3>
+          <div className="py-10 text-center space-y-5">
+            <CheckCircle2 size={56} className="mx-auto text-emerald-400" />
+            <h3 className="text-2xl font-black uppercase tracking-tight">Ready for WhatsApp Review</h3>
             <p className="text-xs text-white/70 max-w-xs mx-auto uppercase tracking-wider">
-              Your fit details have been sent to WhatsApp for CEO review and verification before publishing.
+              Your fit details are prepared for WhatsApp review before publishing.
             </p>
+            {submittedWhatsappUrl && (
+              <div className="flex flex-col items-center gap-3 pt-2">
+                <a
+                  href={submittedWhatsappUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="bg-[#25D366] hover:bg-[#20bd5a] text-white px-6 py-3 text-xs font-black uppercase tracking-[0.2em] inline-flex items-center gap-2 transition-colors"
+                >
+                  <MessageCircle size={15} />
+                  <span>Open WhatsApp</span>
+                  <ExternalLink size={13} />
+                </a>
+                <button
+                  type="button"
+                  onClick={() => {
+                    setIsSuccess(false);
+                    setCreatorName('');
+                    setHandle('');
+                    setMediaUrl('');
+                    setCaption('');
+                    setSelectedProductId('');
+                    onClose();
+                  }}
+                  className="text-[10px] font-bold uppercase tracking-widest text-white/50 hover:text-white"
+                >
+                  Done & Close
+                </button>
+              </div>
+            )}
           </div>
         ) : (
           <form onSubmit={handleSubmit} className="space-y-5">
@@ -174,7 +219,7 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
                     />
                   </label>
                   <span className="text-[10px] text-white/40 truncate">
-                    {mediaUrl ? 'Media Loaded Ready' : 'PNG, JPG, MP4 supported'}
+                    {isUploadingMedia ? 'Uploading & syncing media...' : mediaUrl ? 'Media Loaded Ready' : 'PNG, JPG, MP4 supported'}
                   </span>
                 </div>
                 <input
@@ -240,7 +285,7 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
               </button>
               <button
                 type="submit"
-                disabled={isSubmitting || !mediaUrl.trim()}
+                disabled={isSubmitting || isUploadingMedia || !mediaUrl.trim()}
                 className="bg-white text-black px-6 py-2.5 text-xs font-black uppercase tracking-[0.18em] hover:bg-zinc-200 transition-colors disabled:opacity-40"
               >
                 {isSubmitting ? 'Publishing...' : 'Submit Fit'}

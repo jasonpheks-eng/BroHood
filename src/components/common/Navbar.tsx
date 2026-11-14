@@ -63,16 +63,12 @@ export const Navbar: React.FC<NavbarProps> = ({
         onChangeView('store');
         return;
       }
-      const unlocked =
-        sessionStorage.getItem('brotherhood_admin_unlocked') === 'true' ||
-        localStorage.getItem('brotherhood_admin_unlocked') === 'true';
-      if (unlocked) {
-        onChangeView('admin');
-        window.scrollTo({ top: 0, behavior: 'smooth' });
-      } else {
-        if (onRequireAdminAuth) {
-          onRequireAdminAuth();
-        }
+      try {
+        sessionStorage.removeItem('brotherhood_admin_unlocked');
+        localStorage.removeItem('brotherhood_admin_unlocked');
+      } catch {}
+      if (onRequireAdminAuth) {
+        onRequireAdminAuth();
       }
     } else if (target === 'store') {
       if (window.location.hash) {

@@ -132,11 +132,40 @@
   animation: gallery-fade-up 0.75s cubic-bezier(0.22, 1, 0.36, 1) both;
 }
 
+@keyframes brotherhood-hero-breathe {
+  0%,
+  100% {
+    transform: scale(1);
+  }
+  50% {
+    transform: scale(1.06);
+  }
+}
+
+.hero-autoplay-breathe {
+  will-change: transform;
+  animation: brotherhood-hero-breathe 6s ease-in-out infinite;
+}
+
+/* Suppress native iOS/Safari/Chrome play button overlays on ambient autoplay videos */
+video.autoplay-video::-webkit-media-controls,
+video.autoplay-video::-webkit-media-controls-enclosure,
+video.autoplay-video::-webkit-media-controls-panel,
+video.autoplay-video::-webkit-media-controls-play-button,
+video.autoplay-video::-webkit-media-controls-start-playback-button,
+video.autoplay-video::-webkit-media-controls-overlay-play-button {
+  display: none !important;
+  -webkit-appearance: none !important;
+  opacity: 0 !important;
+  pointer-events: none !important;
+}
+
 @media (prefers-reduced-motion: reduce) {
   .marquee-fast,
   .anim-pulse-glow,
   .anim-float-drift,
-  .anim-fade-up {
+  .anim-fade-up,
+  .hero-autoplay-breathe {
     animation: none !important;
     transform: none !important;
   }

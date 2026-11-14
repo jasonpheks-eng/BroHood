@@ -1,8 +1,8 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { X, Trash2, ShoppingBag, ArrowRight, ShieldCheck, Check, MessageCircle } from 'lucide-react';
 import { CartItem, Settings } from '../../types';
 import { ResolvedImage } from './ResolvedMedia';
-import { formatPrice, formatWhatsAppDigits } from '../../utils';
+import { formatPrice, resolveStoreWhatsAppDigits, buildWhatsAppDirectUrl } from '../../utils';
 
 interface CartDrawerProps {
   isOpen: boolean;
@@ -24,6 +24,15 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   onClearCart,
 }) => {
   const [checkoutSuccess, setCheckoutSuccess] = useState(false);
+  const [missingNumberNotice, setMissingNumberNotice] = useState(false);
+
+  const whatsappDigits = resolveStoreWhatsAppDigits(settings);
+
+  useEffect(() => {
+    if (whatsappDigits || !isOpen) {
+      setMissingNumberNotice(false);
+    }
+  }, [whatsappDigits, isOpen]);
 
   if (!isOpen) return null;
 
@@ -34,7 +43,6 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
   const shippingCost = subtotal >= freeShippingThreshold ? 0 : 15;
   const grandTotal = finalTotal + shippingCost;
 
-  const whatsappDigits = formatWhatsAppDigits(settings.whatsappNumber);
   const baseOrigin = typeof window !== 'undefined' ? window.location.origin : '';
 
   const getPublicImageUrl = (rawUrl?: string): string => {
@@ -69,9 +77,7 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
     `*Total: ${formatPrice(grandTotal)}*`,
   ];
   const whatsappText = orderLines.join('\n');
-  const whatsappUrl = whatsappDigits
-    ? `https://wa.me/${whatsappDigits}?text=${encodeURIComponent(whatsappText)}`
-    : `https://wa.me/?text=${encodeURIComponent(whatsappText)}`;
+  const whatsappUrl = buildWhatsAppDirectUrl(whatsappDigits, whatsappText);
 
   const handleCheckout = () => {
     setCheckoutSuccess(true);
@@ -227,35 +233,58 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
             </div>
 
             {/* Proceed to WhatsApp Checkout Action */}
-            <a
-              href={whatsappUrl}
-              target="_blank"
-              rel="noopener noreferrer"
-              onClick={handleCheckout}
-              className={`group w-full px-5 py-4 border text-[11px] font-black uppercase tracking-[0.2em] flex items-center justify-between transition-all duration-200 shadow-md active:scale-[0.99] ${
-                checkoutSuccess
-                  ? 'bg-[#1EBE5D] border-[#1EBE5D] text-white'
-                  : 'bg-[#25D366] border-[#25D366] text-white hover:bg-[#20bd5a] hover:border-[#20bd5a]'
-              }`}
-            >
-              {checkoutSuccess ? (
-                <span className="w-full flex items-center justify-center gap-2.5 text-white">
-                  <Check size={16} className="text-white shrink-0" />
-                  <span>Opening WhatsApp Order...</span>
-                </span>
-              ) : (
-                <>
-                  <span className="flex items-center gap-2.5 whitespace-nowrap text-white">
-                    <MessageCircle size={17} className="text-white fill-white/20 shrink-0" />
-                    <span>Checkout via WhatsApp</span>
+            {whatsappUrl ? (
+              <a
+                href={whatsappUrl}
+                target="_blank"
+                rel="noopener noreferrer"
+                onClick={handleCheckout}
+                className={`group w-full px-5 py-4 border text-[11px] font-black uppercase tracking-[0.2em] flex items-center justify-between transition-all duration-200 shadow-md active:scale-[0.99] ${
+                  checkoutSuccess
+                    ? 'bg-[#1EBE5D] border-[#1EBE5D] text-white'
+                    : 'bg-[#25D366] border-[#25D366] text-white hover:bg-[#20bd5a] hover:border-[#20bd5a]'
+                }`}
+              >
+                {checkoutSuccess ? (
+                  <span className="w-full flex items-center justify-center gap-2.5 text-white">
+                    <Check size={16} className="text-white shrink-0" />
+                    <span>Opening WhatsApp Order...</span>
                   </span>
-                  <ArrowRight
-                    size={15}
-                    className="text-white group-hover:translate-x-1 transition-all shrink-0"
-                  />
-                </>
-              )}
-            </a>
+                ) : (
+                  <>
+                    <span className="flex items-center gap-2.5 whitespace-nowrap text-white">
+                      <MessageCircle size={17} className="text-white fill-white/20 shrink-0" />
+                      <span>Checkout via WhatsApp</span>
+                    </span>
+                    <ArrowRight
+                      size={15}
+                      className="text-white group-hover:translate-x-1 transition-all shrink-0"
+                    />
+                  </>
+                )}
+              </a>
+            ) : (
+              <button
+                type="button"
+                onClick={() => setMissingNumberNotice(true)}
+                className="group w-full px-5 py-4 border bg-[#25D366] border-[#25D366] text-white hover:bg-[#20bd5a] hover:border-[#20bd5a] text-[11px] font-black uppercase tracking-[0.2em] flex items-center justify-between transition-all duration-200 shadow-md active:scale-[0.99]"
+              >
+                <span className="flex items-center gap-2.5 whitespace-nowrap text-white">
+                  <MessageCircle size={17} className="text-white fill-white/20 shrink-0" />
+                  <span>Checkout via WhatsApp</span>
+                </span>
+                <ArrowRight
+                  size={15}
+                  className="text-white group-hover:translate-x-1 transition-all shrink-0"
+                />
+              </button>
+            )}
+
+            {missingNumberNotice && !whatsappUrl && (
+              <p className="text-[11px] font-medium text-rose-600 text-center">
+                No store WhatsApp number saved yet. Open Admin → Settings &amp; Visuals to enter the number you want orders texted to.
+              </p>
+            )}
 
             {checkoutSuccess && (
               <button
@@ -273,7 +302,13 @@ export const CartDrawer: React.FC<CartDrawerProps> = ({
 
             <div className="flex items-center justify-center gap-2 text-[9px] font-bold uppercase tracking-widest text-zinc-400">
               <ShieldCheck size={12} />
-              <span>Direct WhatsApp Order Concierge</span>
+              {whatsappDigits ? (
+                <span>
+                  Direct WhatsApp to <span className="font-mono tabular-nums text-zinc-600">+{whatsappDigits}</span>
+                </span>
+              ) : (
+                <span>Direct WhatsApp Order Concierge</span>
+              )}
             </div>
           </div>
         )}

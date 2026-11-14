@@ -19,9 +19,10 @@ import {
   StudioGalleryItem,
   StudioGalleryState,
 } from '../../types';
-import { saveMedia } from '../../mediaStore';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { inferMediaType } from '../../hooks/useStudioGalleryState';
+import { uploadMediaToSupabase } from '../../supabaseSync';
+import { compressImageForCrossDevice } from '../../utils';
 
 interface StudioGalleryAdminProps {
   state: StudioGalleryState;
@@ -66,57 +67,6 @@ const TEXT_POSITIONS: { value: GalleryTextPosition; label: string }[] = [
   { value: 'bottom-center', label: 'Bottom Center' },
   { value: 'bottom-right', label: 'Bottom Right' },
 ];
-
-async function compressImageFile(file: File, maxDim = 1400, quality = 0.84): Promise<string> {
-  const rawDataUrl = await new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-
-  if (typeof document === 'undefined' || file.type === 'image/svg+xml') {
-    return rawDataUrl;
-  }
-
-  return new Promise<string>((resolve) => {
-    const img = new Image();
-    img.onload = () => {
-      try {
-        let { width, height } = img;
-        if (width > maxDim || height > maxDim) {
-          const ratio = Math.min(maxDim / width, maxDim / height);
-          width = Math.round(width * ratio);
-          height = Math.round(height * ratio);
-        }
-        const canvas = document.createElement('canvas');
-        canvas.width = width;
-        canvas.height = height;
-        const ctx = canvas.getContext('2d');
-        if (!ctx) {
-          resolve(rawDataUrl);
-          return;
-        }
-        ctx.drawImage(img, 0, 0, width, height);
-        const compressed = canvas.toDataURL('image/jpeg', quality);
-        resolve(compressed.length < rawDataUrl.length ? compressed : rawDataUrl);
-      } catch {
-        resolve(rawDataUrl);
-      }
-    };
-    img.onerror = () => resolve(rawDataUrl);
-    img.src = rawDataUrl;
-  });
-}
-
-async function readFileAsDataUrl(file: File): Promise<string> {
-  return new Promise<string>((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onload = () => resolve(reader.result as string);
-    reader.onerror = reject;
-    reader.readAsDataURL(file);
-  });
-}
 
 export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
   state,
@@ -195,39 +145,32 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
         source: 'upload',
       };
 
-      if (isVideoFile) {
-        const rawVideoDataUrl = await readFileAsDataUrl(file);
-        const savedUri = await saveMedia(`studio_video_${id}_${Date.now()}`, rawVideoDataUrl);
-        if (!savedUri.startsWith('idb://') && savedUri.length > 750 * 1024) {
-          onShowToast?.('Video file too large without browser IndexedDB storage. Try a smaller clip or paste a URL.');
-          return;
-        }
-        updateDraft((prev) => ({
-          ...prev,
-          items: prev.items.map((item) =>
-            item.id === id
-              ? { ...item, image: savedUri, mediaType: 'video', mediaMetadata: metadata }
-              : item
-          ),
-        }));
-        onShowToast?.('Video staged — click Save & Apply to publish');
-      } else {
-        const processedDataUrl = await compressImageFile(file);
-        const finalSrc =
-          processedDataUrl.length > 80 * 1024
-            ? await saveMedia(`studio_tile_${id}_${Date.now()}`, processedDataUrl)
-            : processedDataUrl;
+      onShowToast?.(isVideoFile ? 'Uploading video to Supabase...' : 'Uploading photo...');
 
-        updateDraft((prev) => ({
-          ...prev,
-          items: prev.items.map((item) =>
-            item.id === id
-              ? { ...item, image: finalSrc, mediaType: 'image', mediaMetadata: metadata }
-              : item
-          ),
-        }));
-        onShowToast?.('Image staged — click Save & Apply to publish');
+      const uploadRes = await uploadMediaToSupabase(file, file.name);
+      if (!uploadRes.url) {
+        onShowToast?.(uploadRes.error || 'Could not upload media for cross-device sync.');
+        return;
       }
+
+      updateDraft((prev) => ({
+        ...prev,
+        items: prev.items.map((item) =>
+          item.id === id
+            ? {
+                ...item,
+                image: uploadRes.url,
+                mediaType: isVideoFile ? 'video' : 'image',
+                mediaMetadata: metadata,
+              }
+            : item
+        ),
+      }));
+      onShowToast?.(
+        uploadRes.source === 'supabase'
+          ? `${isVideoFile ? 'Video' : 'Photo'} synced to Supabase — click Save & Apply`
+          : 'Photo optimized for all devices — click Save & Apply'
+      );
     } catch (err) {
       console.error('Failed to process uploaded media:', err);
       onShowToast?.('Failed to read media file');
@@ -248,9 +191,16 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
         draft.items.map(async (item, idx) => {
           let mediaSrc = item.image || '';
           const mediaType = inferMediaType(mediaSrc, item.mediaType);
-          if (mediaSrc.startsWith('data:') && mediaSrc.length > 80 * 1024) {
-            const prefix = mediaType === 'video' ? 'studio_video' : 'studio_tile';
-            mediaSrc = await saveMedia(`${prefix}_${item.id || idx}_${Date.now()}`, mediaSrc);
+          if (mediaSrc.startsWith('data:')) {
+            const uploaded = await uploadMediaToSupabase(
+              mediaSrc,
+              item.mediaMetadata?.fileName || `studio_tile_${item.id || idx}`
+            );
+            if (uploaded.url) {
+              mediaSrc = uploaded.url;
+            } else if (mediaType === 'image') {
+              mediaSrc = await compressImageForCrossDevice(mediaSrc, 155000);
+            }
           }
           return {
             id: item.id || `tile-${idx + 1}`,
@@ -278,7 +228,7 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
       await onSaveAndApply(cleanDraft);
       setDraft(cleanDraft);
       setIsDirty(false);
-      onShowToast?.('Studio Gallery saved & applied live!');
+      onShowToast?.('Studio Gallery saved & synced across devices!');
     } catch (err) {
       console.error('Failed to save Studio Gallery:', err);
       onShowToast?.('Error saving Studio Gallery. Please try again.');

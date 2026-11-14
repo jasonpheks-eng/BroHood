@@ -2,6 +2,7 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { doc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { StudioGalleryItem, StudioGalleryState } from '../types';
+import { syncStudioGalleryToSupabase } from '../supabaseSync';
 
 export const STUDIO_GALLERY_COLLECTION = 'studio_gallery';
 export const STUDIO_GALLERY_DOC_ID = 'config';
@@ -237,6 +238,8 @@ export function useStudioGalleryState(
           `${STUDIO_GALLERY_COLLECTION}/${STUDIO_GALLERY_DOC_ID}`
         );
       }
+
+      await syncStudioGalleryToSupabase(serialized);
 
       if (cloudCallbackRef.current) {
         await cloudCallbackRef.current(serialized);

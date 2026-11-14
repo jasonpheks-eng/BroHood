@@ -39,6 +39,7 @@ export const ResolvedImage: React.FC<React.ImgHTMLAttributes<HTMLImageElement>> 
 export const ResolvedVideo: React.FC<React.VideoHTMLAttributes<HTMLVideoElement>> = ({
   src,
   autoPlay,
+  className,
   ...props
 }) => {
   const resolvedSrc = useResolvedMedia(src);
@@ -47,11 +48,27 @@ export const ResolvedVideo: React.FC<React.VideoHTMLAttributes<HTMLVideoElement>
   useEffect(() => {
     const el = videoRef.current;
     if (!el || !resolvedSrc || !autoPlay) return;
+    el.muted = true;
+    el.defaultMuted = true;
+    el.playsInline = true;
+    el.controls = false;
     el.play().catch(() => {
-      // Ignore autoplay rejection on strict browsers when unmuted
+      // Ignore autoplay rejection on strict browsers when blocked by OS policy
     });
   }, [resolvedSrc, autoPlay]);
 
   if (!resolvedSrc) return null;
-  return <video key={resolvedSrc} ref={videoRef} src={resolvedSrc} autoPlay={autoPlay} {...props} />;
+  return (
+    <video
+      key={resolvedSrc}
+      ref={videoRef}
+      src={resolvedSrc}
+      autoPlay={autoPlay}
+      controls={false}
+      disablePictureInPicture
+      disableRemotePlayback
+      className={className ? `${className} autoplay-video` : 'autoplay-video'}
+      {...props}
+    />
+  );
 };

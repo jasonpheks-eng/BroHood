@@ -29,8 +29,8 @@ import {
   GalleryTextAnimation,
   SocialLinkItem,
 } from '../../types';
-import { saveMedia } from '../../mediaStore';
-import { formatPrice, getDefaultSocialLinks, formatWhatsAppDigits } from '../../utils';
+import { formatPrice, getDefaultSocialLinks, formatWhatsAppDigits, compressImageForCrossDevice } from '../../utils';
+import { uploadMediaToSupabase } from '../../supabaseSync';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
@@ -43,6 +43,7 @@ interface AdminPanelProps {
   onSaveProduct: (product: Product) => Promise<void>;
   onDeleteProduct: (productId: string) => Promise<void>;
   onSaveSettings: (settings: Settings) => Promise<void>;
+  onSaveWhatsappNumber?: (whatsappNumber: string) => Promise<void>;
   onSaveCreatorPost?: (post: CreatorPost) => Promise<void>;
   onDeleteCreatorPost?: (postId: string) => Promise<void>;
   onBackToStore: () => void;
@@ -67,6 +68,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   onSaveProduct,
   onDeleteProduct,
   onSaveSettings,
+  onSaveWhatsappNumber,
   onSaveCreatorPost,
   onDeleteCreatorPost,
   onBackToStore,
@@ -74,21 +76,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [activeTab, setActiveTab] = useState<'products' | 'gallery' | 'settings' | 'creators'>('products');
   const [isEditingProduct, setIsEditingProduct] = useState(false);
   const [formProduct, setFormProduct] = useState<Partial<Product>>({});
-  const [formSettings, setFormSettings] = useState<Settings>({ ...settings });
+  const [formSettings, setRawFormSettings] = useState<Settings>({ ...settings });
+  const [isSettingsDirty, setIsSettingsDirty] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [savingWhatsapp, setSavingWhatsapp] = useState(false);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const setFormSettings = React.useCallback(
+    (next: Settings | ((prev: Settings) => Settings)) => {
+      setIsSettingsDirty(true);
+      setRawFormSettings(next);
+    },
+    []
+  );
 
   const settingsRef = React.useRef(settings);
   React.useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
 
+  const lastSavedWhatsappRef = React.useRef((settings.whatsappNumber || '').trim());
+
   const { galleryState, onSave: saveGalleryState } = useStudioGalleryState('brotherhood_studio_gallery_v1', {
     cloudState: settings.studioGallery,
     onSave: async (nextGallery) => {
       const updatedSettings: Settings = { ...settingsRef.current, studioGallery: nextGallery };
-      setFormSettings(updatedSettings);
+      setRawFormSettings(updatedSettings);
+      setIsSettingsDirty(false);
       await onSaveSettings(updatedSettings);
     },
   });
@@ -103,14 +118,65 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Sync formSettings when settings prop changes
+  // Sync formSettings when settings prop changes only when there are no pending unsaved edits
   React.useEffect(() => {
-    setFormSettings({ ...settings });
-  }, [settings]);
+    if (!isSettingsDirty) {
+      setRawFormSettings({ ...settings });
+      lastSavedWhatsappRef.current = (settings.whatsappNumber || '').trim();
+    }
+  }, [settings, isSettingsDirty]);
 
   const showToast = (msg: string) => {
     setToastMessage(msg);
-    setTimeout(() => setToastMessage(null), 3000);
+    setTimeout(() => setToastMessage(null), 3500);
+  };
+
+  const persistWhatsappNumber = React.useCallback(
+    async (rawNumber: string, showSuccessToast = false) => {
+      const clean = (rawNumber || '').trim();
+      setSavingWhatsapp(true);
+      try {
+        if (onSaveWhatsappNumber) {
+          await onSaveWhatsappNumber(clean);
+        } else {
+          await onSaveSettings({ ...settingsRef.current, whatsappNumber: clean });
+        }
+        lastSavedWhatsappRef.current = clean;
+        if (showSuccessToast) {
+          showToast(
+            clean
+              ? 'WhatsApp checkout number saved & synced!'
+              : 'WhatsApp checkout number cleared.'
+          );
+        }
+      } catch (err) {
+        console.error('Failed to persist WhatsApp number:', err);
+        if (showSuccessToast) {
+          showToast('Failed to save WhatsApp number.');
+        }
+      } finally {
+        setSavingWhatsapp(false);
+      }
+    },
+    [onSaveWhatsappNumber, onSaveSettings]
+  );
+
+  // Auto-save WhatsApp checkout number 500ms after typing stops so changing tabs or leaving Admin never loses it
+  React.useEffect(() => {
+    const cleanDraft = (formSettings.whatsappNumber || '').trim();
+    if (cleanDraft === lastSavedWhatsappRef.current) return;
+    const timer = setTimeout(() => {
+      void persistWhatsappNumber(cleanDraft, false);
+    }, 500);
+    return () => clearTimeout(timer);
+  }, [formSettings.whatsappNumber, persistWhatsappNumber]);
+
+  const handleBackToStoreWithFlush = async () => {
+    const cleanDraft = (formSettings.whatsappNumber || '').trim();
+    if (cleanDraft !== lastSavedWhatsappRef.current) {
+      await persistWhatsappNumber(cleanDraft, false);
+    }
+    onBackToStore();
   };
 
   // Product Add / Edit
@@ -185,23 +251,21 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Upload handler with IndexedDB offloading
+  // Cross-device media upload handler (Supabase Storage primary + compact image fallback)
   const handleFileUpload = async (file: File): Promise<string> => {
-    return new Promise((resolve, reject) => {
-      const reader = new FileReader();
-      reader.onload = async () => {
-        const result = reader.result as string;
-        if (result.length > 100 * 1024) {
-          const key = `media_${Date.now()}_${Math.random().toString(36).substring(2, 7)}`;
-          const idbUri = await saveMedia(key, result);
-          resolve(idbUri);
-        } else {
-          resolve(result);
-        }
-      };
-      reader.onerror = reject;
-      reader.readAsDataURL(file);
-    });
+    const isVideo = file.type.startsWith('video/');
+    showToast(isVideo ? 'Uploading video to Supabase...' : 'Uploading photo...');
+    const result = await uploadMediaToSupabase(file, file.name);
+    if (!result.url) {
+      showToast(result.error || 'Upload failed. Please try a smaller file or paste an HTTPS link.');
+      return '';
+    }
+    if (result.source === 'supabase') {
+      showToast(`${isVideo ? 'Video' : 'Photo'} synced to Supabase`);
+    } else {
+      showToast('Photo optimized for cross-device sync');
+    }
+    return result.url;
   };
 
   // Submit Product Form
@@ -237,8 +301,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setFormProduct({});
       showToast(
         productToSave.id
-          ? `Updated "${productToSave.name}"`
-          : `Added "${productToSave.name}" to catalog`
+          ? `Updated "${productToSave.name}" & synced to Supabase`
+          : `Added "${productToSave.name}" & synced to Supabase`
       );
     } catch (err) {
       console.error('Failed to save product', err);
@@ -246,6 +310,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     } finally {
       setSavingProduct(false);
     }
+  };
+
+  const resolveCrossDeviceUrl = async (val: string, label: string): Promise<string> => {
+    if (!val || !val.startsWith('data:')) return val;
+    const uploaded = await uploadMediaToSupabase(val, label);
+    if (uploaded.url) return uploaded.url;
+    if (val.startsWith('data:image/')) {
+      return await compressImageForCrossDevice(val, 155000);
+    }
+    return '';
   };
 
   // Submit Store Settings
@@ -256,38 +330,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       const sanitized: any = { ...formSettings };
       for (const key of Object.keys(sanitized)) {
         if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:')) {
-          const idbKey = `settings_${key}_${Date.now()}`;
-          sanitized[key] = await saveMedia(idbKey, sanitized[key]);
+          sanitized[key] = await resolveCrossDeviceUrl(sanitized[key], `settings_${key}`);
         }
       }
       if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
-        const offloadedUrls = await Promise.all(
+        const cleanedUrls = await Promise.all(
           sanitized.heroVideoUrls.map(async (url: string, i: number) => {
-            if (url && url.startsWith('data:')) {
-              return await saveMedia(`hero_vid_${i}_${Date.now()}`, url);
+            if (!url) return '';
+            if (url.startsWith('data:')) {
+              return await resolveCrossDeviceUrl(url, `hero_vid_${i}`);
             }
             return url;
           })
         );
-        sanitized.heroVideoUrls = offloadedUrls;
+        const filtered = cleanedUrls.filter((u: string) => Boolean(u && u.trim() && !u.startsWith('idb://')));
+        sanitized.heroVideoUrls =
+          filtered.length > 0 ? filtered : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
+        sanitized.heroVideoUrl = sanitized.heroVideoUrls[0];
       }
 
       if (sanitized.galleryImageUrls && Array.isArray(sanitized.galleryImageUrls)) {
-        const offloadedGallery = await Promise.all(
+        const cleanedGallery = await Promise.all(
           sanitized.galleryImageUrls.map(async (url: string, i: number) => {
             if (url && url.startsWith('data:')) {
-              return await saveMedia(`gallery_img_${i}_${Date.now()}`, url);
+              return await resolveCrossDeviceUrl(url, `gallery_img_${i}`);
             }
             return url;
           })
         );
-        sanitized.galleryImageUrls = offloadedGallery;
+        sanitized.galleryImageUrls = cleanedGallery.filter(Boolean);
       }
 
       sanitized.studioGallery = galleryState;
 
       await onSaveSettings(sanitized);
-      showToast('Store settings saved successfully');
+      lastSavedWhatsappRef.current = (sanitized.whatsappNumber || '').trim();
+      setRawFormSettings(sanitized);
+      setIsSettingsDirty(false);
+      showToast('Settings saved & synced across devices');
     } catch (err) {
       console.error('Failed to save settings', err);
       showToast('Failed to save settings.');
@@ -318,13 +398,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const handleSaveCreatorPostSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
-    if (!formCreatorPost.creatorName || !formCreatorPost.mediaUrl || !onSaveCreatorPost) return;
+    if (!formCreatorPost.creatorName?.trim() || !formCreatorPost.mediaUrl?.trim() || !onSaveCreatorPost) return;
     setSavingCreatorPost(true);
     try {
-      await onSaveCreatorPost(formCreatorPost as CreatorPost);
+      const rawHandle = (formCreatorPost.handle || '@brotherhood').trim();
+      const normalizedHandle = rawHandle.startsWith('@') ? rawHandle : `@${rawHandle}`;
+      const normalizedPost: CreatorPost = {
+        ...(formCreatorPost.id ? { id: formCreatorPost.id } : {}),
+        creatorName: formCreatorPost.creatorName.trim(),
+        handle: normalizedHandle,
+        mediaUrl: formCreatorPost.mediaUrl.trim(),
+        isVideo: Boolean(formCreatorPost.isVideo),
+        socialLink: formCreatorPost.socialLink?.trim() || '',
+        caption: formCreatorPost.caption?.trim() || '',
+        taggedProductIds: formCreatorPost.taggedProductIds || [],
+        featured: formCreatorPost.featured ?? true,
+      };
+      await onSaveCreatorPost(normalizedPost);
       setIsEditingCreatorPost(false);
       setFormCreatorPost({});
-      showToast('Creator post saved successfully!');
+      showToast('Creator fit saved & synced to Supabase!');
     } catch (err) {
       console.error('Failed to save creator post:', err);
       showToast('Error saving creator post.');
@@ -367,7 +460,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         {/* Top bar */}
         <div className="flex flex-wrap items-center justify-between gap-2 mb-6 md:mb-8 pb-4 border-b border-zinc-200">
           <button
-            onClick={onBackToStore}
+            onClick={handleBackToStoreWithFlush}
             className="flex items-center gap-2 text-[11px] sm:text-xs font-black uppercase tracking-[0.2em] text-zinc-500 hover:text-black transition-colors py-1"
           >
             <ArrowLeft size={14} /> Exit Admin
@@ -377,7 +470,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               Admin · {settings.brandName || 'BROTHERHOOD'}
             </span>
             <button
-              onClick={onBackToStore}
+              onClick={handleBackToStoreWithFlush}
               className="flex items-center gap-1.5 px-3 py-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-700 text-[10px] font-black uppercase tracking-wider transition-colors border border-zinc-200"
               title="Lock Admin Session"
             >
@@ -695,8 +788,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const file = e.target.files?.[0];
                           if (file) {
                             const res = await handleFileUpload(file);
-                            setFormSettings({ ...formSettings, logoUrl: res });
-                            showToast('Logo image uploaded');
+                            if (res) {
+                              setFormSettings({ ...formSettings, logoUrl: res });
+                            }
                           }
                         }}
                       />
@@ -818,26 +912,40 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {/* WhatsApp Number */}
               <div className="space-y-2">
                 <label className="text-[10px] font-black uppercase tracking-widest text-zinc-500 block">
-                  WhatsApp Checkout Number (Include Country Code, e.g. +1 555 123 4567)
+                  WhatsApp Checkout Number (Orders Text This Exact Number)
                 </label>
                 <div className="flex flex-col sm:flex-row gap-2">
                   <input
                     type="tel"
-                    placeholder="+1 555 123 4567"
+                    placeholder="+265 999 123 456"
                     value={formSettings.whatsappNumber || ''}
                     onChange={(e) => setFormSettings({ ...formSettings, whatsappNumber: e.target.value })}
+                    onBlur={() => {
+                      const clean = (formSettings.whatsappNumber || '').trim();
+                      if (clean !== lastSavedWhatsappRef.current) {
+                        void persistWhatsappNumber(clean, false);
+                      }
+                    }}
                     className="flex-1 min-w-0 border border-zinc-200 p-2.5 text-xs font-mono font-bold focus:outline-none focus:border-black"
                   />
+                  <button
+                    type="button"
+                    disabled={savingWhatsapp}
+                    onClick={() => persistWhatsappNumber(formSettings.whatsappNumber || '', true)}
+                    className="bg-[#25D366] hover:bg-[#20bd5a] text-white px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-1.5 shrink-0 transition-colors disabled:opacity-50"
+                  >
+                    <Check size={13} /> {savingWhatsapp ? 'Saving...' : 'Save Number'}
+                  </button>
                   {formSettings.whatsappNumber && (
                     <button
                       type="button"
                       onClick={async () => {
                         const digits = formatWhatsAppDigits(formSettings.whatsappNumber);
-                        const link = digits ? `https://wa.me/${digits}` : '';
+                        const link = digits ? `https://api.whatsapp.com/send?phone=${digits}` : '';
                         if (link && navigator.clipboard?.writeText) {
                           try {
                             await navigator.clipboard.writeText(link);
-                            showToast('Copied WhatsApp link');
+                            showToast('Copied direct WhatsApp link');
                           } catch {
                             showToast('Select link to copy');
                           }
@@ -845,15 +953,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       }}
                       className="border border-zinc-200 hover:border-black px-3 py-2 text-[10px] font-black uppercase tracking-widest flex items-center justify-center gap-1.5 shrink-0 transition-colors"
                     >
-                      <Copy size={12} /> Copy wa.me
+                      <Copy size={12} /> Copy Link
                     </button>
                   )}
                 </div>
-                {formatWhatsAppDigits(formSettings.whatsappNumber) && (
-                  <p className="text-[10px] font-mono text-emerald-700">
-                    Active Checkout Target: https://wa.me/{formatWhatsAppDigits(formSettings.whatsappNumber)}
-                  </p>
-                )}
+                {(() => {
+                  const digits = formatWhatsAppDigits(formSettings.whatsappNumber);
+                  if (!digits) {
+                    return (
+                      <p className="text-[10px] font-mono text-zinc-400">
+                        Enter the phone number with country code. Auto-saves as you type.
+                      </p>
+                    );
+                  }
+                  const isSynced =
+                    (formSettings.whatsappNumber || '').trim() === lastSavedWhatsappRef.current &&
+                    !savingWhatsapp;
+                  return (
+                    <div className="flex flex-wrap items-center justify-between gap-2 text-[10px] font-mono">
+                      <span className="text-emerald-700 break-all tabular-nums">
+                        Direct Checkout Target: https://api.whatsapp.com/send?phone={digits}
+                      </span>
+                      <span className="text-zinc-500 uppercase tracking-wider shrink-0">
+                        {savingWhatsapp ? 'Syncing...' : isSynced ? 'Synced' : 'Pending save'}
+                      </span>
+                    </div>
+                  );
+                })()}
               </div>
 
               {/* Social Tags Manager (+ / - and Copy/Paste Links) */}
@@ -1038,29 +1164,49 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <h3 className="text-sm font-black uppercase tracking-widest flex items-center gap-2">
                   <Video size={16} /> Hero Video Playlist
                 </h3>
-                <button
-                  type="button"
-                  onClick={() => {
-                    const current = formSettings.heroVideoUrls || [];
-                    setFormSettings({ ...formSettings, heroVideoUrls: [...current, ''] });
-                  }}
-                  className="text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:text-black flex items-center gap-1"
-                >
-                  <Plus size={12} /> Add Video Track
-                </button>
+                <div className="flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setFormSettings({
+                        ...formSettings,
+                        heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
+                        heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+                      });
+                      showToast('Default BrotherHood hero video staged — click Save Settings');
+                    }}
+                    className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black border border-zinc-200 px-2.5 py-1 transition-colors"
+                  >
+                    Use Default Hero Video
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      const current = formSettings.heroVideoUrls || [];
+                      setFormSettings({ ...formSettings, heroVideoUrls: [...current, ''] });
+                    }}
+                    className="text-[10px] font-black uppercase tracking-widest text-zinc-600 hover:text-black flex items-center gap-1"
+                  >
+                    <Plus size={12} /> Add Video Track
+                  </button>
+                </div>
               </div>
 
               <div className="space-y-4">
-                {(formSettings.heroVideoUrls || ['/assets/aistudio/Scene-1_c77479cd.mp4']).map((url, i) => (
+                {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i) => (
                   <div key={i} className="p-3 sm:p-3.5 bg-zinc-50 border border-zinc-200 space-y-3">
                     <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                       <div className="flex items-center justify-between sm:justify-start gap-3">
                         <div className="flex items-center gap-3">
                           <span className="font-mono text-xs text-zinc-400 tabular-nums">0{i + 1}</span>
                           {/* Image / Media Preview Thumbnail */}
-                          <div className="w-14 h-12 bg-black border border-zinc-300 overflow-hidden shrink-0 flex items-center justify-center">
+                          <div className="w-14 h-12 bg-white border border-zinc-300 overflow-hidden shrink-0 flex items-center justify-center">
                             {url ? (
-                              <ResolvedImage src={url} alt={`Track ${i + 1}`} className="w-full h-full object-cover" />
+                              url.toLowerCase().match(/\.(mp4|webm|mov|m4v)($|\?)/) || url.startsWith('data:video/') ? (
+                                <ResolvedVideo src={url} muted playsInline autoPlay loop className="w-full h-full object-cover" />
+                              ) : (
+                                <ResolvedImage src={url} alt={`Track ${i + 1}`} className="w-full h-full object-cover" />
+                              )
                             ) : (
                               <span className="text-[9px] text-zinc-500 font-mono">Empty</span>
                             )}
@@ -1103,10 +1249,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               const file = e.target.files?.[0];
                               if (file) {
                                 const res = await handleFileUpload(file);
-                                const next = [...(formSettings.heroVideoUrls || [])];
-                                next[i] = res;
-                                setFormSettings({ ...formSettings, heroVideoUrls: next });
-                                showToast('Hero media uploaded');
+                                if (res) {
+                                  const next = [...(formSettings.heroVideoUrls || [])];
+                                  next[i] = res;
+                                  setFormSettings({
+                                    ...formSettings,
+                                    heroVideoUrls: next,
+                                    ...(i === 0 ? { heroVideoUrl: res } : {}),
+                                  });
+                                }
                               }
                             }}
                           />
@@ -1172,8 +1323,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         const file = e.target.files?.[0];
                         if (file) {
                           const res = await handleFileUpload(file);
-                          setFormSettings({ ...formSettings, heroImageUrl: res });
-                          showToast('Hero image uploaded');
+                          if (res) {
+                            setFormSettings({ ...formSettings, heroImageUrl: res });
+                          }
                         }
                       }}
                     />
@@ -1410,7 +1562,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const file = e.target.files?.[0];
                             if (file) {
                               const res = await handleFileUpload(file);
-                              setFormSettings({ ...formSettings, editorialImageUrl: res });
+                              if (res) {
+                                setFormSettings({ ...formSettings, editorialImageUrl: res });
+                              }
                             }
                           }}
                         />
@@ -1467,7 +1621,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const file = e.target.files?.[0];
                           if (file) {
                             const res = await handleFileUpload(file);
-                            setFormSettings({ ...formSettings, featuredImageUrl: res });
+                            if (res) {
+                              setFormSettings({ ...formSettings, featuredImageUrl: res });
+                            }
                           }
                         }}
                       />
@@ -1497,7 +1653,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const file = e.target.files?.[0];
                           if (file) {
                             const res = await handleFileUpload(file);
-                            setFormSettings({ ...formSettings, footerImageUrl: res });
+                            if (res) {
+                              setFormSettings({ ...formSettings, footerImageUrl: res });
+                            }
                           }
                         }}
                       />
@@ -1652,11 +1810,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const file = e.target.files?.[0];
                           if (file) {
                             const uri = await handleFileUpload(file);
-                            if (!formProduct.imageUrl) {
-                              setFormProduct({ ...formProduct, imageUrl: uri });
-                            } else {
-                              const gallery = formProduct.galleryImages || [];
-                              setFormProduct({ ...formProduct, galleryImages: [...gallery, uri] });
+                            if (uri) {
+                              if (!formProduct.imageUrl) {
+                                setFormProduct({ ...formProduct, imageUrl: uri });
+                              } else {
+                                const gallery = formProduct.galleryImages || [];
+                                setFormProduct({ ...formProduct, galleryImages: [...gallery, uri] });
+                              }
                             }
                           }
                         }}
@@ -1687,7 +1847,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const file = e.target.files?.[0];
                             if (file) {
                               const uri = await handleFileUpload(file);
-                              setFormProduct({ ...formProduct, imageUrl: uri });
+                              if (uri) {
+                                setFormProduct({ ...formProduct, imageUrl: uri });
+                              }
                             }
                           }}
                         />
@@ -1952,11 +2114,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                           const file = e.target.files?.[0];
                           if (file) {
                             const url = await handleFileUpload(file);
-                            setFormCreatorPost({
-                              ...formCreatorPost,
-                              mediaUrl: url,
-                              isVideo: file.type.startsWith('video/'),
-                            });
+                            if (url) {
+                              setFormCreatorPost({
+                                ...formCreatorPost,
+                                mediaUrl: url,
+                                isVideo: file.type.startsWith('video/'),
+                              });
+                            }
                           }
                         }}
                         className="hidden"

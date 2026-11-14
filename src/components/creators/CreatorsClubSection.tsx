@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Play, Instagram, ShoppingBag, Plus, Sparkles, Tag, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
+import { Instagram, ShoppingBag, Plus, Sparkles, Tag, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Product, CreatorPost, Settings } from '../../types';
 import { ResolvedImage, useResolvedMedia } from '../common/ResolvedMedia';
 import { formatPrice } from '../../utils';
@@ -42,7 +42,10 @@ const CreatorPostCard: React.FC<{
             loop
             playsInline
             autoPlay
-            className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
+            controls={false}
+            disablePictureInPicture
+            disableRemotePlayback
+            className="w-full h-full object-cover pointer-events-none autoplay-video transition-transform duration-500 group-hover:scale-105"
           />
         ) : (
           <ResolvedImage
@@ -50,13 +53,6 @@ const CreatorPostCard: React.FC<{
             alt={post.creatorName || post.handle}
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
-        )}
-
-        {/* Video Badge */}
-        {isVideo && (
-          <div className="absolute top-3 right-3 z-10 bg-black/70 backdrop-blur-md px-2 py-1 text-[9px] font-black uppercase tracking-widest text-white flex items-center gap-1">
-            <Play size={10} className="fill-white" /> Video
-          </div>
         )}
 
         {/* Gradient Overlay for text readability */}
