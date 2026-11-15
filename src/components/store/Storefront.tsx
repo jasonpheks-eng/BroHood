@@ -13,7 +13,7 @@ interface StorefrontProps {
   creatorPosts: CreatorPost[];
   onAddToCart: (product: Product, size?: string) => void;
   onQuickView: (product: Product) => void;
-  onNavigateToShop: () => void;
+  onNavigateToShop: (category?: string) => void;
   onSubmitPost: (post: Omit<CreatorPost, 'id' | 'createdAt'>) => Promise<void>;
 }
 
@@ -63,7 +63,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
       >
         <div className="flex flex-col items-center justify-center mb-12 gap-4 text-center">
           <button
-            onClick={onNavigateToShop}
+            onClick={() => onNavigateToShop()}
             style={{ fontSize: '10px' }}
             className="bg-black text-white px-8 py-3.5 rounded-none font-black uppercase tracking-widest hover:bg-zinc-800 transition-all shadow-md"
           >
@@ -109,6 +109,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
                   product={product}
                   onAddToCart={onAddToCart}
                   onQuickView={onQuickView}
+                  onCategoryClick={(category) => onNavigateToShop(category)}
                 />
               </div>
             ))}
@@ -129,7 +130,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
       <StudioGallery
         state={galleryState}
         brandName={settings.brandName || 'BROTHERHOOD'}
-        onExploreClick={onNavigateToShop}
+        onExploreClick={() => onNavigateToShop()}
       />
 
       {/* 5. About Us Section */}
@@ -177,7 +178,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
               </p>
               <div>
                 <button
-                  onClick={onNavigateToShop}
+                  onClick={() => onNavigateToShop()}
                   className="border border-white/25 text-white px-6 py-2.5 text-[10px] font-black tracking-[0.2em] uppercase hover:bg-white hover:text-black transition-colors rounded-none"
                 >
                   Shop Collection

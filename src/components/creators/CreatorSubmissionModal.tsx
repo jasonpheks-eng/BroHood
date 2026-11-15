@@ -66,9 +66,10 @@ export const CreatorSubmissionModal: React.FC<CreatorSubmissionModalProps> = ({
     const matchedProduct = products.find((p) => p.id === selectedProductId);
 
     const whatsappDigits = resolveStoreWhatsAppDigits(settings);
-    const cleanMediaNote = mediaUrl.startsWith('data:')
-      ? '[Uploaded photo attached in portal]'
-      : mediaUrl.trim();
+    const cleanMediaNote =
+      mediaUrl.startsWith('data:') || mediaUrl.startsWith('idb://')
+        ? '[Uploaded media attached in portal]'
+        : mediaUrl.trim();
     const orderLines = [
       `*New Creator Fit Submission — ${settings.brandName || 'BROTHERHOOD'}*`,
       '',

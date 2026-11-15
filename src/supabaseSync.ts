@@ -5,10 +5,11 @@ import {
 } from './supabase';
 import { Product, Settings, CreatorPost, StudioGalleryState } from './types';
 import { compressImageForCrossDevice } from './utils';
+import { saveMedia } from './mediaStore';
 
 export interface MediaUploadResult {
   url: string;
-  source: 'supabase' | 'server' | 'inline' | 'external';
+  source: 'supabase' | 'server' | 'inline' | 'local' | 'external';
   error?: string;
   errorCode?: 'BUCKET_NOT_FOUND' | 'UPLOAD_FAILED';
   needsBucketSetup?: boolean;
@@ -446,14 +447,101 @@ export async function verifySupabaseApiConnection(
   };
 }
 
+export interface UploadRequestTraceResult {
+  requestUrl: string;
+  method: string;
+  requestHeaders: Record<string, string>;
+  responseStatus: number;
+  responseStatusText: string;
+  responseHeaders: Record<string, string>;
+  responseBody: string;
+  bucketExists: boolean;
+  isBucketNotFound: boolean;
+  timestamp: string;
+}
 
-async function hasSupabaseMediaBucket(): Promise<{ exists: boolean; bucketNotFound: boolean; lastError?: string }> {
+export async function traceUploadAttempt(): Promise<UploadRequestTraceResult[]> {
+  const cfg = getSupabaseConfig();
+  const traces: UploadRequestTraceResult[] = [];
+  const timestamp = new Date().toLocaleTimeString();
+
+  const urlsToTrace = [
+    { method: 'GET', url: `${cfg.url}/storage/v1/bucket/${encodeURIComponent(cfg.bucket)}` },
+    { method: 'GET', url: `${cfg.url}/storage/v1/bucket` },
+    { method: 'GET', url: `${cfg.url}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/__health_probe__.txt` },
+    { method: 'POST', url: `${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/uploads/__trace_probe__.txt` },
+  ];
+
+  for (const item of urlsToTrace) {
+    const reqHeaders: Record<string, string> = {
+      apikey: cfg.anonKey,
+      Authorization: `Bearer ${cfg.anonKey}`,
+    };
+    if (item.method === 'POST') {
+      reqHeaders['Content-Type'] = 'text/plain';
+    }
+
+    try {
+      const resp = await fetch(item.url, {
+        method: item.method,
+        headers: reqHeaders,
+        body: item.method === 'POST' ? 'upload trace probe' : undefined,
+      });
+
+      const respHeaders: Record<string, string> = {};
+      resp.headers.forEach((val, key) => {
+        respHeaders[key] = val;
+      });
+
+      const bodyText = await resp.text();
+      const bucketMissing = isBucketNotFoundError(bodyText) || resp.status === 404;
+
+      traces.push({
+        requestUrl: item.url,
+        method: item.method,
+        requestHeaders: { apikey: cfg.anonKey.slice(0, 10) + '...', Authorization: 'Bearer ...' },
+        responseStatus: resp.status,
+        responseStatusText: resp.statusText,
+        responseHeaders: respHeaders,
+        responseBody: bodyText.slice(0, 500),
+        bucketExists: resp.ok,
+        isBucketNotFound: bucketMissing,
+        timestamp,
+      });
+    } catch (err) {
+      traces.push({
+        requestUrl: item.url,
+        method: item.method,
+        requestHeaders: { apikey: cfg.anonKey.slice(0, 10) + '...' },
+        responseStatus: 0,
+        responseStatusText: err instanceof Error ? err.message : 'Network Error',
+        responseHeaders: {},
+        responseBody: String(err),
+        bucketExists: false,
+        isBucketNotFound: true,
+        timestamp,
+      });
+    }
+  }
+
+  return traces;
+}
+
+
+
+async function hasSupabaseMediaBucket(): Promise<{
+  exists: boolean;
+  bucketNotFound: boolean;
+  resolvedBucket?: string;
+  lastError?: string;
+}> {
   const now = Date.now();
   const cfg = getSupabaseConfig();
-  if (cachedBucketStatus && (cachedBucketStatus.exists || now - cachedBucketStatus.checkedAt < 15_000)) {
+  if (cachedBucketStatus && (cachedBucketStatus.exists || now - cachedBucketStatus.checkedAt < 3_000)) {
     return {
       exists: cachedBucketStatus.exists,
       bucketNotFound: !cachedBucketStatus.exists && isBucketNotFoundError(cachedBucketStatus.lastError),
+      resolvedBucket: cfg.bucket,
       lastError: cachedBucketStatus.lastError,
     };
   }
@@ -469,7 +557,7 @@ async function hasSupabaseMediaBucket(): Promise<{ exists: boolean; bucketNotFou
     );
     if (resp.ok) {
       cachedBucketStatus = { exists: true, checkedAt: now };
-      return { exists: true, bucketNotFound: false };
+      return { exists: true, bucketNotFound: false, resolvedBucket: cfg.bucket };
     }
     const text = await resp.text();
     let parsed: unknown = text;
@@ -478,7 +566,34 @@ async function hasSupabaseMediaBucket(): Promise<{ exists: boolean; bucketNotFou
     } catch {
       // keep raw text
     }
-    const handled = handleSupabaseStorageBucketError(parsed, 'Hero Media Upload Preflight');
+    const handled = handleSupabaseStorageBucketError(parsed, 'Media Upload Preflight');
+
+    // Also check if another public bucket exists on this Supabase project
+    try {
+      const listResp = await fetch(`${cfg.url}/storage/v1/bucket`, {
+        headers: {
+          apikey: cfg.anonKey,
+          Authorization: `Bearer ${cfg.anonKey}`,
+        },
+      });
+      if (listResp.ok) {
+        const buckets = (await listResp.json()) as Array<{ id?: string; name?: string; public?: boolean }>;
+        if (Array.isArray(buckets) && buckets.length > 0) {
+          const matching =
+            buckets.find((b) => (b.name || b.id) === cfg.bucket) ||
+            buckets.find((b) => b.public) ||
+            buckets[0];
+          const fallbackBucketName = matching?.name || matching?.id;
+          if (fallbackBucketName) {
+            cachedBucketStatus = { exists: true, checkedAt: now };
+            return { exists: true, bucketNotFound: false, resolvedBucket: fallbackBucketName };
+          }
+        }
+      }
+    } catch {
+      // ignore bucket list probe failure
+    }
+
     if (handled.isBucketNotFound) {
       cachedBucketStatus = { exists: false, checkedAt: now, lastError: handled.rawMessage };
       return {
@@ -494,9 +609,9 @@ async function hasSupabaseMediaBucket(): Promise<{ exists: boolean; bucketNotFou
     const pubMissing = isBucketNotFoundError(pubText);
     if (!pubMissing) {
       cachedBucketStatus = { exists: true, checkedAt: now };
-      return { exists: true, bucketNotFound: false };
+      return { exists: true, bucketNotFound: false, resolvedBucket: cfg.bucket };
     }
-    const pubHandled = handleSupabaseStorageBucketError(pubText, 'Hero Media Upload Preflight');
+    const pubHandled = handleSupabaseStorageBucketError(pubText, 'Media Upload Preflight');
     cachedBucketStatus = { exists: false, checkedAt: now, lastError: pubHandled.rawMessage };
     return {
       exists: false,
@@ -504,7 +619,7 @@ async function hasSupabaseMediaBucket(): Promise<{ exists: boolean; bucketNotFou
       lastError: pubHandled.detail,
     };
   } catch (err) {
-    const handled = handleSupabaseStorageBucketError(err, 'Hero Media Upload Preflight');
+    const handled = handleSupabaseStorageBucketError(err, 'Media Upload Preflight');
     cachedBucketStatus = { exists: false, checkedAt: now, lastError: handled.rawMessage };
     return {
       exists: false,
@@ -694,20 +809,21 @@ export async function uploadMediaToSupabase(
         ? 'image/jpeg'
         : 'application/octet-stream';
 
-    // 1. Check if configured Supabase bucket exists (0-byte preflight check)
+    // 1. Check if configured Supabase bucket exists (or any available public bucket)
     const cfg = getSupabaseConfig();
     const bucketProbe =
       blob.size <= SUPABASE_MAX_OBJECT_BYTES
         ? await hasSupabaseMediaBucket()
-        : { exists: false, bucketNotFound: false };
+        : { exists: false, bucketNotFound: false, resolvedBucket: undefined, lastError: undefined };
 
     let bucketNotFoundNote = bucketProbe.bucketNotFound ? bucketProbe.lastError : undefined;
 
     if (bucketProbe.exists) {
+      const targetBucket = bucketProbe.resolvedBucket || cfg.bucket;
       options?.onProgress?.(30);
       const client = getSupabaseClient();
       const { data, error } = await client.storage
-        .from(cfg.bucket)
+        .from(targetBucket)
         .upload(filePath, blob, {
           contentType,
           upsert: true,
@@ -715,7 +831,7 @@ export async function uploadMediaToSupabase(
 
       if (!error && data?.path) {
         const { data: publicUrlData } = client.storage
-          .from(cfg.bucket)
+          .from(targetBucket)
           .getPublicUrl(data.path);
         if (publicUrlData?.publicUrl) {
           options?.onProgress?.(100);
@@ -732,8 +848,9 @@ export async function uploadMediaToSupabase(
       }
     }
 
-    // 2. For videos (or any file when Supabase bucket is not configured):
-    // Upload via chunked app media server (/api/upload-media-init -> chunks -> complete)
+    // 2. For videos (when Supabase bucket is missing or file > 48MB):
+    // Try chunked app media server (/api/upload-media-init -> chunks -> complete),
+    // then compact inline data URL (<= 650KB), then IndexedDB binary Blob storage (idb://).
     if (isVideo) {
       const serverAttempt = await uploadToLocalMediaServer(
         blob,
@@ -745,13 +862,39 @@ export async function uploadMediaToSupabase(
         return {
           url: serverAttempt.url,
           source: 'server',
-          ...(bucketNotFoundNote
-            ? {
-                errorCode: 'BUCKET_NOT_FOUND',
-                needsBucketSetup: true,
-                bucketDiagnosticNote: bucketNotFoundNote,
-              }
-            : {}),
+          ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
+        };
+      }
+
+      if (blob.size <= 650 * 1024) {
+        try {
+          const dataUrl = await new Promise<string>((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '');
+            reader.onerror = () => reject(reader.error);
+            reader.readAsDataURL(blob);
+          });
+          if (dataUrl && dataUrl.length <= 900_000) {
+            options?.onProgress?.(100);
+            return {
+              url: dataUrl,
+              source: 'inline',
+              ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
+            };
+          }
+        } catch {
+          // fall through to IndexedDB Blob fallback
+        }
+      }
+
+      const idbKey = `vid_${Date.now()}_${safeName}`;
+      const idbUri = await saveMedia(idbKey, blob);
+      if (idbUri && idbUri.startsWith('idb://')) {
+        options?.onProgress?.(100);
+        return {
+          url: idbUri,
+          source: 'local',
+          ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
         };
       }
 
@@ -776,7 +919,7 @@ export async function uploadMediaToSupabase(
     }
 
     // 3. For images: compress into a compact JPEG data URL for instant cross-device Firestore sync,
-    // or fall back to app media server if still large.
+    // or fall back to app media server / IndexedDB if still large.
     if (isImage) {
       const compressed = await compressImageForCrossDevice(fileOrDataUrl, 155000);
       if (compressed && compressed.length <= 195000) {
@@ -784,13 +927,7 @@ export async function uploadMediaToSupabase(
         return {
           url: compressed,
           source: 'inline',
-          ...(bucketNotFoundNote
-            ? {
-                errorCode: 'BUCKET_NOT_FOUND',
-                needsBucketSetup: true,
-                bucketDiagnosticNote: bucketNotFoundNote,
-              }
-            : {}),
+          ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
         };
       }
       const serverAttempt = await uploadToLocalMediaServer(
@@ -803,13 +940,16 @@ export async function uploadMediaToSupabase(
         return {
           url: serverAttempt.url,
           source: 'server',
-          ...(bucketNotFoundNote
-            ? {
-                errorCode: 'BUCKET_NOT_FOUND',
-                needsBucketSetup: true,
-                bucketDiagnosticNote: bucketNotFoundNote,
-              }
-            : {}),
+          ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
+        };
+      }
+      const idbUri = await saveMedia(`img_${Date.now()}_${safeName}`, blob);
+      if (idbUri && idbUri.startsWith('idb://')) {
+        options?.onProgress?.(100);
+        return {
+          url: idbUri,
+          source: 'local',
+          ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
         };
       }
       return {
@@ -835,13 +975,17 @@ export async function uploadMediaToSupabase(
       return {
         url: serverAttempt.url,
         source: 'server',
-        ...(bucketNotFoundNote
-          ? {
-              errorCode: 'BUCKET_NOT_FOUND',
-              needsBucketSetup: true,
-              bucketDiagnosticNote: bucketNotFoundNote,
-            }
-          : {}),
+        ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
+      };
+    }
+
+    const idbUri = await saveMedia(`media_${Date.now()}_${safeName}`, blob);
+    if (idbUri && idbUri.startsWith('idb://')) {
+      options?.onProgress?.(100);
+      return {
+        url: idbUri,
+        source: 'local',
+        ...(bucketNotFoundNote ? { bucketDiagnosticNote: bucketNotFoundNote } : {}),
       };
     }
 

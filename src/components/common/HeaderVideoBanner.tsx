@@ -28,12 +28,11 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       settings.heroVideoUrls && settings.heroVideoUrls.length > 0
         ? settings.heroVideoUrls.filter((u) => Boolean(u && u.trim()))
         : [];
-    const usableList = rawList.filter((u) => !u.startsWith('idb://'));
-    const resolved = usableList.length > 0
-      ? usableList
-      : settings.heroVideoUrl && !settings.heroVideoUrl.startsWith('idb://')
+    const resolved = rawList.length > 0
+      ? rawList
+      : settings.heroVideoUrl
       ? [settings.heroVideoUrl]
-      : settings.heroImageUrl && !settings.heroImageUrl.startsWith('idb://')
+      : settings.heroImageUrl
       ? [settings.heroImageUrl]
       : [DEFAULT_HERO_VIDEO_URL];
     console.log('[HeroBanner] Computed heroMediaList:', resolved, 'rawSettingsUrls:', settings.heroVideoUrls);

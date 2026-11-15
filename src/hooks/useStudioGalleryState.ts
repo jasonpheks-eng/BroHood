@@ -64,6 +64,7 @@ export function inferMediaType(
   if (
     src.startsWith('data:video/') ||
     src.startsWith('idb://studio_video_') ||
+    src.startsWith('idb://vid_') ||
     /\.(mp4|webm|mov|m4v|ogg)(\?.*)?$/i.test(src)
   ) {
     return 'video';

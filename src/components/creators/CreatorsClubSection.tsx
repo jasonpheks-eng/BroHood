@@ -24,7 +24,10 @@ const CreatorPostCard: React.FC<{
 }> = ({ post, products, onQuickView, onAddToCart, cardClassName = '' }) => {
   const [showShopPopover, setShowShopPopover] = useState(false);
   const resolvedMedia = useResolvedMedia(post.mediaUrl);
-  const isVideo = post.isVideo || (resolvedMedia && (resolvedMedia.endsWith('.mp4') || resolvedMedia.includes('data:video/')));
+  const isVideo =
+    post.isVideo ||
+    (post.mediaUrl && post.mediaUrl.startsWith('idb://vid_')) ||
+    Boolean(resolvedMedia && (resolvedMedia.endsWith('.mp4') || resolvedMedia.includes('data:video/')));
 
   // Match tagged products
   const taggedProducts = (post.taggedProductIds || [])
@@ -36,17 +39,20 @@ const CreatorPostCard: React.FC<{
       {/* Background Media */}
       <div className="relative w-full aspect-[3/4] overflow-hidden bg-black">
         {isVideo ? (
-          <video
-            src={resolvedMedia || post.mediaUrl}
-            muted
-            loop
-            playsInline
-            autoPlay
-            controls={false}
-            disablePictureInPicture
-            disableRemotePlayback
-            className="w-full h-full object-cover pointer-events-none autoplay-video transition-transform duration-500 group-hover:scale-105"
-          />
+          resolvedMedia || (!post.mediaUrl.startsWith('idb://') ? post.mediaUrl : '') ? (
+            <video
+              key={resolvedMedia || post.mediaUrl}
+              src={resolvedMedia || post.mediaUrl}
+              muted
+              loop
+              playsInline
+              autoPlay
+              controls={false}
+              disablePictureInPicture
+              disableRemotePlayback
+              className="w-full h-full object-cover pointer-events-none autoplay-video transition-transform duration-500 group-hover:scale-105"
+            />
+          ) : null
         ) : (
           <ResolvedImage
             src={post.mediaUrl}
@@ -139,10 +145,8 @@ const CreatorPostCard: React.FC<{
               </div>
             ) : (
               <button
-                onClick={() => {
-                  if (products.length > 0) onQuickView(products[0]);
-                }}
-                className="w-full bg-white/10 hover:bg-white text-white hover:text-black py-2 px-3 text-[9px] font-black uppercase tracking-widest transition-all flex items-center justify-center gap-1"
+                type="button"
+                className="w-full bg-white/10 text-white/75 py-2 px-3 text-[9px] font-black uppercase tracking-widest flex items-center justify-center gap-1 cursor-default"
               >
                 <ShoppingBag size={12} /> Explore Garment
               </button>

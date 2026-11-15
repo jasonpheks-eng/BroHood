@@ -171,7 +171,9 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
           ? `${isVideoFile ? 'Video' : 'Photo'} synced to Supabase — click Save & Apply`
           : uploadRes.source === 'server'
           ? `${isVideoFile ? 'Video' : 'Photo'} uploaded — click Save & Apply`
-          : 'Photo optimized for all devices — click Save & Apply'
+          : uploadRes.source === 'local'
+          ? `${isVideoFile ? 'Video' : 'Photo'} uploaded — click Save & Apply`
+          : 'Media optimized for all devices — click Save & Apply'
       );
     } catch (err) {
       console.error('Failed to process uploaded media:', err);

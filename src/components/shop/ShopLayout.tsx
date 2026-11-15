@@ -1,4 +1,4 @@
-import React, { useState, useMemo } from 'react';
+import React, { useState, useMemo, useEffect } from 'react';
 import { Search, SlidersHorizontal, ArrowLeft } from 'lucide-react';
 import { Product, Settings } from '../../types';
 import { StoreProductCard } from '../common/StoreProductCard';
@@ -7,6 +7,7 @@ import { Helmet } from '../common/Helmet';
 interface ShopLayoutProps {
   products: Product[];
   settings: Settings;
+  initialCategory?: string;
   onAddToCart: (product: Product, size?: string) => void;
   onQuickView: (product: Product) => void;
   onBackToHome: () => void;
@@ -26,13 +27,18 @@ const STANDARD_CATEGORIES = [
 export const ShopLayout: React.FC<ShopLayoutProps> = ({
   products,
   settings,
+  initialCategory = 'all',
   onAddToCart,
   onQuickView,
   onBackToHome,
 }) => {
-  const [selectedCategory, setSelectedCategory] = useState<string>('all');
+  const [selectedCategory, setSelectedCategory] = useState<string>(initialCategory || 'all');
   const [sortBy, setSortBy] = useState<'newest' | 'price-asc' | 'price-desc'>('newest');
   const [searchQuery, setSearchQuery] = useState('');
+
+  useEffect(() => {
+    setSelectedCategory(initialCategory || 'all');
+  }, [initialCategory]);
 
   // Extract all available categories from products + standard list
   const allCategories = useMemo(() => {
@@ -222,6 +228,10 @@ export const ShopLayout: React.FC<ShopLayoutProps> = ({
                 product={product}
                 onAddToCart={onAddToCart}
                 onQuickView={onQuickView}
+                onCategoryClick={(cat) => {
+                  setSelectedCategory(cat.toUpperCase());
+                  window.scrollTo({ top: 0, behavior: 'smooth' });
+                }}
               />
             ))}
           </div>

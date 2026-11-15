@@ -47,10 +47,12 @@ import {
   detectIsVideoFile,
   runSupabaseStorageDiagnostics,
   verifySupabaseApiConnection,
+  traceUploadAttempt,
   resetSupabaseBucketCache,
   SupabaseStorageDiagnosticReport,
   SupabaseDiagnosticLogEntry,
   SupabaseConnectionVerification,
+  UploadRequestTraceResult,
 } from '../../supabaseSync';
 import {
   DEFAULT_SUPABASE_URL,
@@ -135,7 +137,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [runningDiagnostics, setRunningDiagnostics] = useState(false);
   const [storageDiagReport, setStorageDiagReport] = useState<SupabaseStorageDiagnosticReport | null>(null);
   const [storageDiagLogs, setStorageDiagLogs] = useState<SupabaseDiagnosticLogEntry[]>([]);
+  const [tracingUpload, setTracingUpload] = useState(false);
+  const [uploadTraces, setUploadTraces] = useState<UploadRequestTraceResult[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+
+  const handleTraceUpload = async () => {
+    setTracingUpload(true);
+    try {
+      const traces = await traceUploadAttempt();
+      setUploadTraces(traces);
+      showToast(`Captured ${traces.length} upload request trace paths & response headers`);
+    } catch (err) {
+      console.error('Upload trace failed:', err);
+      showToast('Failed to trace upload request paths');
+    } finally {
+      setTracingUpload(false);
+    }
+  };
 
   const setFormSettings = React.useCallback(
     (next: Settings | ((prev: Settings) => Settings)) => {
@@ -567,21 +585,30 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       return '';
     }
     setHeroUploadError(null);
+    setBucketNotFoundDetail(null);
+    setHeroNeedsBucketSql(false);
     if (result.source === 'supabase') {
-      setBucketNotFoundDetail(null);
-      setHeroNeedsBucketSql(false);
       appendDiagnosticLog('success', 'HERO_UPLOAD', `Uploaded to Supabase Storage: ${result.url}`);
       showToast(`${isVideo ? 'Video' : 'Photo'} synced to Supabase`);
     } else if (result.source === 'server') {
       appendDiagnosticLog(
+        'info',
+        'HERO_UPLOAD',
+        `Stored via chunked app media server: ${result.url}${
+          result.bucketDiagnosticNote ? ` (Supabase note: ${result.bucketDiagnosticNote})` : ''
+        }`
+      );
+      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready!`);
+    } else if (result.source === 'local') {
+      appendDiagnosticLog(
         'warn',
         'HERO_UPLOAD',
-        `Supabase bucket missing; stored via chunked app server fallback: ${result.url}`
+        `Saved in browser media store (${result.url}) — run Supabase SQL for cross-device cloud sync`
       );
-      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded via app server`);
+      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready on this device`);
     } else {
       appendDiagnosticLog('info', 'HERO_UPLOAD', `Stored inline/optimized (${result.source})`);
-      showToast('Photo optimized for cross-device sync');
+      showToast(`${isVideo ? 'Video' : 'Photo'} synced across devices`);
     }
     return result.url;
   };
@@ -593,7 +620,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ...patch,
     };
     if (Array.isArray(merged.heroVideoUrls)) {
-      const usable = merged.heroVideoUrls.filter((u) => Boolean(u && u.trim() && !u.startsWith('idb://')));
+      const usable = merged.heroVideoUrls.filter((u) => Boolean(u && u.trim()));
       merged.heroVideoUrls = usable;
       merged.heroVideoUrl = usable[0] || '/assets/aistudio/brotherhood_hero_loop.mp4';
     }
@@ -715,7 +742,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             return url;
           })
         );
-        const filtered = cleanedUrls.filter((u: string) => Boolean(u && u.trim() && !u.startsWith('idb://')));
+        const filtered = cleanedUrls.filter((u: string) => Boolean(u && u.trim()));
         sanitized.heroVideoUrls =
           filtered.length > 0 ? filtered : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
         sanitized.heroVideoUrl = sanitized.heroVideoUrls[0];
@@ -2183,6 +2210,63 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     ))}
                   </div>
                 )}
+
+                {/* Upload Request & Response Header Tracer Tool */}
+                <div className="pt-4 border-t border-zinc-200 space-y-3">
+                  <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+                    <div>
+                      <h4 className="text-[11px] font-black uppercase tracking-widest flex items-center gap-1.5 text-zinc-900">
+                        <Terminal size={13} /> Upload Request &amp; Response Header Tracer
+                      </h4>
+                      <p className="text-[11px] text-zinc-500 mt-0.5">
+                        Test and record exact request paths, HTTP methods, and response headers during video upload attempts.
+                      </p>
+                    </div>
+                    <button
+                      type="button"
+                      onClick={handleTraceUpload}
+                      disabled={tracingUpload}
+                      className="bg-black hover:bg-zinc-800 text-white px-3.5 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                    >
+                      <RefreshCw size={12} className={tracingUpload ? 'animate-spin' : ''} />
+                      {tracingUpload ? 'Tracing...' : 'Trace Upload Requests'}
+                    </button>
+                  </div>
+
+                  {uploadTraces.length > 0 && (
+                    <div className="bg-zinc-950 text-zinc-100 border border-zinc-800 p-3.5 font-mono text-[11px] max-h-80 overflow-y-auto space-y-3">
+                      {uploadTraces.map((trace, idx) => (
+                        <div key={idx} className="border-b border-zinc-800 pb-2.5 last:border-0 last:pb-0 space-y-1">
+                          <div className="flex items-center justify-between text-xs">
+                            <span className="font-bold text-amber-400">
+                              {trace.method} <span className="text-zinc-200">{trace.requestUrl}</span>
+                            </span>
+                            <span
+                              className={`px-1.5 py-0.5 text-[10px] font-bold ${
+                                trace.responseStatus === 200 || trace.responseStatus === 201
+                                  ? 'bg-emerald-900 text-emerald-200'
+                                  : 'bg-rose-900 text-rose-200'
+                              }`}
+                            >
+                              HTTP {trace.responseStatus} {trace.responseStatusText}
+                            </span>
+                          </div>
+                          <div className="text-[10px] text-zinc-400">
+                            <span className="text-zinc-500">Response Headers:</span>{' '}
+                            {Object.entries(trace.responseHeaders)
+                              .map(([k, v]) => `${k}: ${v}`)
+                              .join(' | ') || 'None'}
+                          </div>
+                          {trace.responseBody && (
+                            <div className="text-[10px] text-zinc-300 bg-zinc-900 p-1.5 border border-zinc-800 rounded-none overflow-x-auto">
+                              {trace.responseBody}
+                            </div>
+                          )}
+                        </div>
+                      ))}
+                    </div>
+                  )}
+                </div>
               </div>
 
               <div className="pt-4 border-t border-zinc-100 flex flex-wrap items-center justify-between gap-3">
@@ -3138,7 +3222,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   >
                     <div className="space-y-3">
                       <div className="relative aspect-[3/4] bg-zinc-900 border border-zinc-200 overflow-hidden">
-                        {post.isVideo || post.mediaUrl.endsWith('.mp4') ? (
+                        {post.isVideo || post.mediaUrl.endsWith('.mp4') || post.mediaUrl.startsWith('idb://vid_') ? (
                           <ResolvedVideo src={post.mediaUrl} muted loop playsInline autoPlay className="w-full h-full object-cover" />
                         ) : (
                           <ResolvedImage src={post.mediaUrl} alt={post.creatorName} className="w-full h-full object-cover" />

@@ -254,6 +254,7 @@ export default function App() {
   const [creatorPosts, setCreatorPosts] = useState<CreatorPost[]>([]);
   const [loading, setLoading] = useState(true);
   const [view, setView] = useState<'store' | 'admin' | 'shop'>('store');
+  const [initialShopCategory, setInitialShopCategory] = useState<string>('all');
   const [cart, setCart] = useState<CartItem[]>(() => {
     try {
       const saved = localStorage.getItem('legacy_cart');
@@ -337,30 +338,20 @@ export default function App() {
               (u: string) =>
                 !u ||
                 u.includes('Scene-1') ||
-                u.includes('Scene-7') ||
-                u.startsWith('idb://')
+                u.includes('Scene-7')
             ) ||
             !data.heroVideoUrl ||
             data.heroVideoUrl.includes('Scene-1') ||
-            data.heroVideoUrl.includes('Scene-7') ||
-            data.heroVideoUrl.startsWith('idb://');
-
-          const hasBrokenHeroImage =
-            typeof data.heroImageUrl === 'string' && data.heroImageUrl.startsWith('idb://');
+            data.heroVideoUrl.includes('Scene-7');
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
-          if (hasOldOrBrokenHeroVideo || hasBrokenHeroImage) {
-            const patch: Record<string, unknown> = {};
-            if (hasOldOrBrokenHeroVideo) {
-              merged.heroVideoUrl = '/assets/aistudio/brotherhood_hero_loop.mp4';
-              merged.heroVideoUrls = ['/assets/aistudio/brotherhood_hero_loop.mp4'];
-              patch.heroVideoUrl = '/assets/aistudio/brotherhood_hero_loop.mp4';
-              patch.heroVideoUrls = ['/assets/aistudio/brotherhood_hero_loop.mp4'];
-            }
-            if (hasBrokenHeroImage) {
-              merged.heroImageUrl = '';
-              patch.heroImageUrl = '';
-            }
+          if (hasOldOrBrokenHeroVideo) {
+            const patch: Record<string, unknown> = {
+              heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
+              heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+            };
+            merged.heroVideoUrl = '/assets/aistudio/brotherhood_hero_loop.mp4';
+            merged.heroVideoUrls = ['/assets/aistudio/brotherhood_hero_loop.mp4'];
             setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
           }
           setSettings(merged);
@@ -800,6 +791,9 @@ export default function App() {
             setIsAdminLoginOpen(true);
             return;
           }
+          if (nextView === 'shop') {
+            setInitialShopCategory('all');
+          }
           setView(nextView);
         }}
         onScrollToSection={scrollToSection}
@@ -854,10 +848,12 @@ export default function App() {
           <ShopLayout
             products={products}
             settings={settings}
+            initialCategory={initialShopCategory}
             onAddToCart={(p, s) => handleAddToCart(p, s || 'M', 1)}
             onQuickView={setQuickViewProduct}
             onBackToHome={() => {
               window.history.replaceState(null, '', window.location.pathname + window.location.search);
+              setInitialShopCategory('all');
               setView('store');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
@@ -869,7 +865,8 @@ export default function App() {
             creatorPosts={creatorPosts}
             onAddToCart={(p, s) => handleAddToCart(p, s || 'M', 1)}
             onQuickView={setQuickViewProduct}
-            onNavigateToShop={() => {
+            onNavigateToShop={(category) => {
+              setInitialShopCategory(category ? category.toUpperCase() : 'all');
               setView('shop');
               window.scrollTo({ top: 0, behavior: 'smooth' });
             }}
@@ -884,6 +881,7 @@ export default function App() {
           settings={settings}
           onNavigate={(target) => {
             window.history.replaceState(null, '', window.location.pathname + window.location.search);
+            if (target === 'shop') setInitialShopCategory('all');
             setView(target);
             window.scrollTo({ top: 0, behavior: 'smooth' });
           }}
