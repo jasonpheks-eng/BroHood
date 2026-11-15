@@ -65,7 +65,10 @@ export const Navbar: React.FC<NavbarProps> = ({
 
   return (
     <header className="sticky top-0 z-[120] bg-white/95 backdrop-blur-md border-b border-zinc-200">
-      <div className="max-w-[1600px] mx-auto px-6 lg:px-12 h-20 flex items-center justify-between gap-8">
+      <div
+        className="max-w-[1600px] mx-auto px-6 lg:px-12 h-20 flex items-center justify-between gap-8"
+        style={{ backgroundColor: '#ffffff' }}
+      >
         {/* Zone 1: Brand Wordmark */}
         <button
           onClick={() => handleNavClick('store')}

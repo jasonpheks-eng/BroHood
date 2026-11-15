@@ -67,6 +67,7 @@ import {
   isSecretSupabaseKey,
 } from '../../supabase';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
+import { getEmbedVideoInfo, normalizeHeroMediaList, normalizeMediaUrlInput } from '../../mediaUrlUtils';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
 import { Helmet } from '../common/Helmet';
@@ -182,12 +183,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
   const { galleryState, onSave: saveGalleryState } = useStudioGalleryState('brotherhood_studio_gallery_v1', {
     cloudState: settings.studioGallery,
-    onSave: async (nextGallery) => {
-      const updatedSettings: Settings = { ...settingsRef.current, studioGallery: nextGallery };
-      setRawFormSettings(updatedSettings);
-      setIsSettingsDirty(false);
-      await onSaveSettings(updatedSettings);
-    },
   });
 
   // Creators Club Admin State
@@ -630,10 +625,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       ...patch,
     };
     if (Array.isArray(merged.heroVideoUrls)) {
-      const usable = merged.heroVideoUrls.filter((u) => Boolean(u && u.trim()));
-      merged.heroVideoUrls =
-        usable.length > 0 ? usable : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
-      merged.heroVideoUrl = merged.heroVideoUrls[0];
+      const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+      const usable = normalizeHeroMediaList(merged.heroVideoUrls);
+      const customOnly = usable.filter((u) => u !== defaultHero);
+      const finalPlaylist =
+        customOnly.length > 0
+          ? customOnly
+          : usable.length > 0
+          ? usable
+          : [defaultHero];
+      merged.heroVideoUrls = finalPlaylist;
+      merged.heroVideoUrl = finalPlaylist[0];
     }
     setIsSettingsDirty(true);
     setRawFormSettings(merged);
@@ -758,14 +760,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
         const cleanedUrls = await Promise.all(
           sanitized.heroVideoUrls.map(async (url: string, i: number) => {
-            if (!url) return '';
-            if (url.startsWith('data:')) {
-              return await resolveCrossDeviceUrl(url, `hero_vid_${i}`);
+            const cleanInput = normalizeMediaUrlInput(url);
+            if (!cleanInput) return '';
+            if (cleanInput.startsWith('data:')) {
+              return await resolveCrossDeviceUrl(cleanInput, `hero_vid_${i}`);
             }
-            return url;
+            return cleanInput;
           })
         );
-        const filtered = cleanedUrls.filter((u: string) => Boolean(u && u.trim()));
+        const filtered = normalizeHeroMediaList(cleanedUrls);
         sanitized.heroVideoUrls =
           filtered.length > 0 ? filtered : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
         sanitized.heroVideoUrl = sanitized.heroVideoUrls[0];
@@ -783,7 +786,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         sanitized.galleryImageUrls = cleanedGallery.filter(Boolean);
       }
 
-      sanitized.studioGallery = galleryState;
+      delete sanitized.studioGallery;
 
       if (
         sanitized.supabaseUrl !== undefined ||
@@ -1759,21 +1762,55 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
               <div className="space-y-3">
                 {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i, arr) => {
+                  const cleanDisplayUrl = url.includes('<') ? normalizeMediaUrlInput(url) || url : url;
+                  const embedMeta = getEmbedVideoInfo(cleanDisplayUrl);
                   const isImageTrack = Boolean(
-                    url &&
-                      !url.toLowerCase().startsWith('idb://vid_') &&
-                      (url.toLowerCase().startsWith('data:image/') ||
-                        url.toLowerCase().startsWith('idb://img_') ||
-                        /\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/i.test(url))
+                    !embedMeta.isEmbed &&
+                      cleanDisplayUrl &&
+                      !cleanDisplayUrl.toLowerCase().startsWith('idb://vid_') &&
+                      (cleanDisplayUrl.toLowerCase().startsWith('data:image/') ||
+                        cleanDisplayUrl.toLowerCase().startsWith('idb://img_') ||
+                        /\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/i.test(cleanDisplayUrl))
                   );
+                  const isDefaultTrack = cleanDisplayUrl === '/assets/aistudio/brotherhood_hero_loop.mp4';
+                  const storageBadge = !cleanDisplayUrl
+                    ? ''
+                    : isDefaultTrack
+                    ? 'Default Loop'
+                    : embedMeta.isEmbed
+                    ? embedMeta.provider === 'streamable'
+                      ? 'Autoplay · Streamable'
+                      : embedMeta.provider === 'youtube'
+                      ? 'Autoplay · YouTube'
+                      : embedMeta.provider === 'vimeo'
+                      ? 'Autoplay · Vimeo'
+                      : 'Autoplay · Embed'
+                    : cleanDisplayUrl.startsWith('idb://')
+                    ? 'Autoplay · Device Cached'
+                    : cleanDisplayUrl.startsWith('/uploads/')
+                    ? 'Autoplay · Server + Cached'
+                    : cleanDisplayUrl.startsWith('data:')
+                    ? 'Autoplay · Inline Synced'
+                    : 'Autoplay · Cloud Synced';
                   return (
                     <div key={i} className="p-3 sm:p-3.5 bg-zinc-50 border border-zinc-200 space-y-3">
                       <div className="flex flex-col sm:flex-row sm:items-center gap-3">
                         <div className="flex items-center justify-between sm:justify-start gap-3">
                           <div className="flex items-center gap-3">
-                            <span className="font-mono text-xs text-zinc-500 tabular-nums whitespace-nowrap">
-                              0{i + 1} · {url ? (isImageTrack ? 'Photo' : 'Video') : 'Empty'}
-                            </span>
+                            <div className="flex flex-col">
+                              <span className="font-mono text-xs text-zinc-700 font-bold tabular-nums whitespace-nowrap">
+                                0{i + 1} · {url ? (isImageTrack ? 'Photo' : 'Video') : 'Empty'}
+                              </span>
+                              {storageBadge && (
+                                <span
+                                  className={`text-[9px] font-mono uppercase tracking-wider whitespace-nowrap ${
+                                    isDefaultTrack ? 'text-zinc-400' : 'text-emerald-700 font-bold'
+                                  }`}
+                                >
+                                  {storageBadge}
+                                </span>
+                              )}
+                            </div>
                             {/* Image / Video Preview Thumbnail */}
                             <div className="w-14 h-12 bg-white border border-zinc-300 overflow-hidden shrink-0 flex items-center justify-center">
                               {url ? (
@@ -1832,14 +1869,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         <input
                           type="text"
                           value={url}
-                          placeholder="Media URL (MP4 video or JPG/PNG photo link)"
+                          placeholder="Media URL (MP4, Streamable/YouTube/Vimeo link, embed code, or photo)"
                           onChange={(e) => {
+                            const rawVal = e.target.value;
+                            const nextVal = rawVal.includes('<') ? normalizeMediaUrlInput(rawVal) : rawVal;
                             const next = [...arr];
-                            next[i] = e.target.value;
+                            next[i] = nextVal;
                             setFormSettings({
                               ...formSettings,
                               heroVideoUrls: next,
-                              ...(i === 0 ? { heroVideoUrl: e.target.value } : {}),
+                              ...(i === 0 ? { heroVideoUrl: nextVal } : {}),
                             });
                           }}
                           className="flex-1 min-w-0 border border-zinc-200 p-2 text-xs font-mono focus:outline-none focus:border-black bg-white"

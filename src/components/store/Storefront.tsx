@@ -57,7 +57,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
         className="max-w-[1600px] mx-auto px-6 lg:px-12 py-16 w-full transition-colors duration-300"
         id="collection-section"
         style={{
-          backgroundColor: settings.legacySectionBgColor || undefined,
+          backgroundColor: '#ffffff',
           color: settings.legacySectionTextColor || undefined,
         }}
       >
@@ -159,7 +159,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
                   <img
                     src="/assets/aistudio/Gemini_Generated_Image_h5y1jzh5y1jzh5y1_81796f08.jpeg"
                     alt={settings.brandName || 'BROTHERHOOD'}
-                    style={{ height: '60px' }}
+                    style={{ height: '75px' }}
                     className="w-auto object-contain mix-blend-screen block"
                   />
                 </span>

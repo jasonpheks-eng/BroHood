@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { Instagram, ShoppingBag, Plus, Sparkles, Tag, Eye, ChevronLeft, ChevronRight } from 'lucide-react';
 import { Product, CreatorPost, Settings } from '../../types';
-import { ResolvedImage, useResolvedMedia } from '../common/ResolvedMedia';
+import { ResolvedImage, ResolvedVideo, useResolvedMedia } from '../common/ResolvedMedia';
+import { getEmbedVideoInfo } from '../../mediaUrlUtils';
 import { formatPrice } from '../../utils';
 import { CreatorSubmissionModal } from './CreatorSubmissionModal';
 
@@ -23,8 +24,10 @@ const CreatorPostCard: React.FC<{
   cardClassName?: string;
 }> = ({ post, products, onQuickView, onAddToCart, cardClassName = '' }) => {
   const [showShopPopover, setShowShopPopover] = useState(false);
-  const resolvedMedia = useResolvedMedia(post.mediaUrl);
+  const embedInfo = getEmbedVideoInfo(post.mediaUrl);
+  const resolvedMedia = useResolvedMedia(embedInfo.isEmbed ? '' : post.mediaUrl);
   const isVideo =
+    embedInfo.isEmbed ||
     post.isVideo ||
     (post.mediaUrl && post.mediaUrl.startsWith('idb://vid_')) ||
     Boolean(resolvedMedia && (resolvedMedia.endsWith('.mp4') || resolvedMedia.includes('data:video/')));
@@ -39,20 +42,14 @@ const CreatorPostCard: React.FC<{
       {/* Background Media */}
       <div className="relative w-full aspect-[3/4] overflow-hidden bg-black">
         {isVideo ? (
-          resolvedMedia || (!post.mediaUrl.startsWith('idb://') ? post.mediaUrl : '') ? (
-            <video
-              key={resolvedMedia || post.mediaUrl}
-              src={resolvedMedia || post.mediaUrl}
-              muted
-              loop
-              playsInline
-              autoPlay
-              controls={false}
-              disablePictureInPicture
-              disableRemotePlayback
-              className="w-full h-full object-cover pointer-events-none autoplay-video transition-transform duration-500 group-hover:scale-105"
-            />
-          ) : null
+          <ResolvedVideo
+            src={post.mediaUrl}
+            muted
+            loop
+            playsInline
+            autoPlay
+            className="w-full h-full object-cover pointer-events-none transition-transform duration-500 group-hover:scale-105"
+          />
         ) : (
           <ResolvedImage
             src={post.mediaUrl}

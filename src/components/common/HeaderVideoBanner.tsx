@@ -1,6 +1,8 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from '../../types';
 import { ResolvedImage, useResolvedMediaState } from './ResolvedMedia';
+import { getServerMediaMirror } from '../../mediaStore';
+import { getEmbedVideoInfo, normalizeHeroMediaList, normalizeMediaUrlInput } from '../../mediaUrlUtils';
 import { cn } from '../../utils';
 
 interface HeaderVideoBannerProps {
@@ -22,20 +24,26 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
   const [heroVideoIndex, setHeroVideoIndex] = useState(0);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
   const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const [mirrorFallbackSrc, setMirrorFallbackSrc] = useState<string>('');
+  const [videoFallbackDefault, setVideoFallbackDefault] = useState(false);
   const heroVideoRef = useRef<HTMLVideoElement | null>(null);
 
-  // Unified Hero Media playlist (supports mixed videos + photos auto-cycling together)
+  // Unified Hero Media playlist (supports mixed videos, embeds & photos auto-cycling together)
   const heroMediaList = React.useMemo(() => {
     const rawList =
       settings.heroVideoUrls && settings.heroVideoUrls.length > 0
-        ? settings.heroVideoUrls.filter((u) => Boolean(u && u.trim()))
+        ? normalizeHeroMediaList(settings.heroVideoUrls)
         : [];
-    const resolved = rawList.length > 0
-      ? rawList
-      : settings.heroVideoUrl
-      ? [settings.heroVideoUrl]
-      : settings.heroImageUrl
-      ? [settings.heroImageUrl]
+    const customOnly = rawList.filter((u) => u !== DEFAULT_HERO_VIDEO_URL);
+    const cleaned = customOnly.length > 0 ? customOnly : rawList;
+    const normalizedSingleVideo = normalizeMediaUrlInput(settings.heroVideoUrl);
+    const normalizedSingleImage = normalizeMediaUrlInput(settings.heroImageUrl);
+    const resolved = cleaned.length > 0
+      ? cleaned
+      : normalizedSingleVideo
+      ? [normalizedSingleVideo]
+      : normalizedSingleImage
+      ? [normalizedSingleImage]
       : [DEFAULT_HERO_VIDEO_URL];
     return resolved;
   }, [settings.heroVideoUrls, settings.heroVideoUrl, settings.heroImageUrl]);
@@ -48,12 +56,32 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       prevFirstItemRef.current = currentFirst;
       setHeroVideoIndex(0);
     }
+    setMirrorFallbackSrc('');
+    setVideoFallbackDefault(false);
   }, [playlistSignature, heroVideoIndex, heroMediaList]);
 
   const rawMediaSrc = heroMediaList[heroVideoIndex] || heroMediaList[0] || DEFAULT_HERO_VIDEO_URL;
-  const { resolvedSrc: activeMediaSrc, isResolving } = useResolvedMediaState(rawMediaSrc);
-  const isUnresolvedIdb = rawMediaSrc.startsWith('idb://') && !isResolving && !activeMediaSrc;
-  const srcToPlay = rawMediaSrc.startsWith('idb://')
+  const embedInfo = React.useMemo(
+    () =>
+      getEmbedVideoInfo(rawMediaSrc, {
+        loop: heroMediaList.length === 1,
+        muted: true,
+        autoplay: true,
+      }),
+    [rawMediaSrc, heroMediaList.length]
+  );
+
+  const { resolvedSrc: activeMediaSrc, isResolving } = useResolvedMediaState(
+    embedInfo.isEmbed ? '' : rawMediaSrc
+  );
+  const isUnresolvedIdb = !embedInfo.isEmbed && rawMediaSrc.startsWith('idb://') && !isResolving && !activeMediaSrc;
+  const srcToPlay = embedInfo.isEmbed
+    ? ''
+    : videoFallbackDefault
+    ? DEFAULT_HERO_VIDEO_URL
+    : mirrorFallbackSrc
+    ? mirrorFallbackSrc
+    : rawMediaSrc.startsWith('idb://')
     ? activeMediaSrc || (isUnresolvedIdb ? DEFAULT_HERO_VIDEO_URL : '')
     : activeMediaSrc || rawMediaSrc;
 
@@ -65,9 +93,10 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
   }, [isUnresolvedIdb, heroMediaList.length]);
 
   const isCurrentItemImage =
+    !embedInfo.isEmbed &&
     !rawMediaSrc.startsWith('idb://vid_') &&
     (isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc));
-  const isBrotherhoodHero = srcToPlay.includes('brotherhood_hero_loop');
+  const isBrotherhoodHero = !embedInfo.isEmbed && srcToPlay.includes('brotherhood_hero_loop');
 
   const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
   const heroZoom = Number(
@@ -97,16 +126,29 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
   useEffect(() => {
     setAutoplayBlocked(false);
 
+    if (embedInfo.isEmbed) {
+      setIsVideoPlaying(true);
+      if (heroMediaList.length <= 1) return;
+      const timer = setTimeout(() => {
+        setMirrorFallbackSrc('');
+        setVideoFallbackDefault(false);
+        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
+      }, 15000);
+      return () => clearTimeout(timer);
+    }
+
     if (isCurrentItemImage) {
       setIsVideoPlaying(false);
       if (heroMediaList.length <= 1) return;
       const timer = setTimeout(() => {
+        setMirrorFallbackSrc('');
+        setVideoFallbackDefault(false);
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       }, 5000);
       return () => clearTimeout(timer);
     }
 
-    if (!srcToPlay) {
+    if (!srcToPlay || srcToPlay.trim().startsWith('<')) {
       setIsVideoPlaying(false);
       return;
     }
@@ -160,6 +202,8 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     const handleEnded = () => {
       if (disposed) return;
       if (heroMediaList.length > 1) {
+        setMirrorFallbackSrc('');
+        setVideoFallbackDefault(false);
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       } else {
         video.currentTime = 0;
@@ -167,10 +211,24 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       }
     };
 
-    const handleError = (e: Event) => {
-      console.error('[HeroBanner] Video playback error for src:', srcToPlay, e);
-      if (!disposed && heroMediaList.length > 1) {
+    const handleError = async () => {
+      if (disposed) return;
+      if (rawMediaSrc.startsWith('/uploads/') && !mirrorFallbackSrc) {
+        const mirror = await getServerMediaMirror(rawMediaSrc);
+        if (!disposed && mirror) {
+          setMirrorFallbackSrc(mirror);
+          return;
+        }
+      }
+      if (heroMediaList.length > 1) {
+        setMirrorFallbackSrc('');
+        setVideoFallbackDefault(false);
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
+        return;
+      }
+      if (!videoFallbackDefault && srcToPlay !== DEFAULT_HERO_VIDEO_URL) {
+        console.warn('[HeroBanner] Video source could not play natively, falling back to default loop:', srcToPlay);
+        setVideoFallbackDefault(true);
       }
     };
 
@@ -202,7 +260,17 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       window.removeEventListener('touchstart', handleUserGestureRetry);
       window.removeEventListener('pointerdown', handleUserGestureRetry);
     };
-  }, [srcToPlay, isCurrentItemImage, heroMediaList.length, heroVideoIndex, attachVideoRef]);
+  }, [
+    srcToPlay,
+    rawMediaSrc,
+    mirrorFallbackSrc,
+    videoFallbackDefault,
+    embedInfo.isEmbed,
+    isCurrentItemImage,
+    heroMediaList.length,
+    heroVideoIndex,
+    attachVideoRef,
+  ]);
 
   return (
     <section
@@ -213,7 +281,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
         settings.heroContentAlign || 'items-center justify-center'
       )}
     >
-      {/* Background Video / Image Playlist with Bidirectional Zoom & Fit Support */}
+      {/* Background Video / Embed / Image Playlist with Bidirectional Zoom & Fit Support */}
       <div className="absolute inset-0 z-0 bg-white overflow-hidden">
         <div
           className="w-full h-full transition-transform duration-300 ease-out"
@@ -223,7 +291,16 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
           }}
         >
           {heroMediaList.length > 0 ? (
-            isCurrentItemImage ? (
+            embedInfo.isEmbed && embedInfo.embedUrl ? (
+              <iframe
+                key={`${heroVideoIndex}:${embedInfo.embedUrl}`}
+                src={embedInfo.embedUrl}
+                title={`Hero Video ${heroVideoIndex + 1}`}
+                allow="autoplay; fullscreen; encrypted-media; picture-in-picture"
+                allowFullScreen
+                className="w-full h-full border-0 pointer-events-none bg-black"
+              />
+            ) : isCurrentItemImage ? (
               <ResolvedImage
                 src={rawMediaSrc}
                 className={cn('w-full h-full transition-opacity duration-500', heroFitClass)}
@@ -232,7 +309,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   objectPosition: heroPosition,
                 }}
               />
-            ) : srcToPlay ? (
+            ) : srcToPlay && !srcToPlay.trim().startsWith('<') ? (
               <>
                 {/* Fallback poster shown only if browser blocks autoplay or during default hero initial frame */}
                 {((!isVideoPlaying && isBrotherhoodHero) ||

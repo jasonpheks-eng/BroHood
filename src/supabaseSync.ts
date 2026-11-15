@@ -5,7 +5,7 @@ import {
 } from './supabase';
 import { Product, Settings, CreatorPost, StudioGalleryState } from './types';
 import { compressImageForCrossDevice } from './utils';
-import { saveMedia } from './mediaStore';
+import { saveMedia, saveServerMediaMirror } from './mediaStore';
 
 export interface MediaUploadResult {
   url: string;
@@ -859,6 +859,7 @@ export async function uploadMediaToSupabase(
         options?.onProgress
       );
       if (serverAttempt.url) {
+        await saveServerMediaMirror(serverAttempt.url, blob);
         return {
           url: serverAttempt.url,
           source: 'server',
@@ -937,6 +938,7 @@ export async function uploadMediaToSupabase(
         options?.onProgress
       );
       if (serverAttempt.url) {
+        await saveServerMediaMirror(serverAttempt.url, blob);
         return {
           url: serverAttempt.url,
           source: 'server',
@@ -972,6 +974,7 @@ export async function uploadMediaToSupabase(
       options?.onProgress
     );
     if (serverAttempt.url) {
+      await saveServerMediaMirror(serverAttempt.url, blob);
       return {
         url: serverAttempt.url,
         source: 'server',

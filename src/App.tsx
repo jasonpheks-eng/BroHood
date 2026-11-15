@@ -11,9 +11,11 @@ import {
   orderBy,
   serverTimestamp,
   getDocFromServer,
+  deleteField,
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { Product, Settings, CartItem, CreatorPost } from './types';
+import { normalizeHeroMediaList, normalizeMediaUrlInput } from './mediaUrlUtils';
 
 enum OperationType {
   CREATE = 'create',
@@ -119,6 +121,50 @@ const DEFAULT_SETTINGS: Settings = {
     'Every piece in the Brotherhood collection is built to represent unity, resilience, and everyday purpose — heavyweight fabrics engineered to move with you and tell a story beyond apparel.',
   whatsappNumber: '',
 };
+
+const HERO_PLAYLIST_CACHE_KEY = 'brotherhood_hero_playlist_v1';
+
+interface CachedHeroPlaylist {
+  heroVideoUrls: string[];
+  heroVideoUrl: string;
+  updatedAt: number;
+  explicitDefaultReset?: boolean;
+}
+
+function readCachedHeroPlaylist(): CachedHeroPlaylist | null {
+  try {
+    const raw = localStorage.getItem(HERO_PLAYLIST_CACHE_KEY);
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as CachedHeroPlaylist;
+    if (Array.isArray(parsed?.heroVideoUrls) && parsed.heroVideoUrls.length > 0) {
+      return parsed;
+    }
+  } catch {
+    // Ignore storage read errors
+  }
+  return null;
+}
+
+function writeCachedHeroPlaylist(
+  urls: string[] | undefined,
+  singleUrl: string | undefined,
+  explicitDefaultReset = false
+) {
+  try {
+    const cleanUrls = (urls || []).filter((u) => Boolean(u && u.trim()));
+    const primary = cleanUrls[0] || (singleUrl && singleUrl.trim()) || DEFAULT_SETTINGS.heroVideoUrl!;
+    const finalUrls = cleanUrls.length > 0 ? cleanUrls : [primary];
+    const payload: CachedHeroPlaylist = {
+      heroVideoUrls: finalUrls,
+      heroVideoUrl: finalUrls[0],
+      updatedAt: Date.now(),
+      explicitDefaultReset,
+    };
+    localStorage.setItem(HERO_PLAYLIST_CACHE_KEY, JSON.stringify(payload));
+  } catch {
+    // Ignore storage quota errors
+  }
+}
 
 const SEED_PRODUCTS: Omit<Product, 'id'>[] = [
   {
@@ -245,7 +291,17 @@ export default function App() {
   const [settings, setSettings] = useState<Settings>(() => {
     try {
       const cachedWhatsapp = localStorage.getItem('brotherhood_whatsapp_number');
-      return cachedWhatsapp ? { ...DEFAULT_SETTINGS, whatsappNumber: cachedWhatsapp } : DEFAULT_SETTINGS;
+      const cachedHero = readCachedHeroPlaylist();
+      return {
+        ...DEFAULT_SETTINGS,
+        ...(cachedWhatsapp ? { whatsappNumber: cachedWhatsapp } : {}),
+        ...(cachedHero
+          ? {
+              heroVideoUrls: cachedHero.heroVideoUrls,
+              heroVideoUrl: cachedHero.heroVideoUrl,
+            }
+          : {}),
+      };
     } catch {
       return DEFAULT_SETTINGS;
     }
@@ -331,36 +387,74 @@ export default function App() {
           const data = snap.data() as any;
           console.log('[Firestore Settings] Received settings snapshot:', data);
           const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
-          const cleanedHeroUrls = heroUrls.filter(
-            (u: unknown): u is string =>
-              typeof u === 'string' &&
-              u.trim().length > 0 &&
-              !u.includes('Scene-1') &&
-              !u.includes('Scene-7')
+          const cleanedHeroUrls = normalizeHeroMediaList(
+            heroUrls.filter(
+              (u: unknown): u is string =>
+                typeof u === 'string' &&
+                u.trim().length > 0 &&
+                !u.includes('Scene-1') &&
+                !u.includes('Scene-7')
+            )
           );
-          const validSingleHeroUrl =
+          const rawSingleHero =
             typeof data.heroVideoUrl === 'string' &&
             data.heroVideoUrl.trim().length > 0 &&
             !data.heroVideoUrl.includes('Scene-1') &&
             !data.heroVideoUrl.includes('Scene-7')
-              ? data.heroVideoUrl.trim()
+              ? normalizeMediaUrlInput(data.heroVideoUrl)
               : '';
+          const validSingleHeroUrl = rawSingleHero;
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
+          const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
           if (cleanedHeroUrls.length === 0 && !validSingleHeroUrl) {
-            const patch: Record<string, unknown> = {
-              heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
-              heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
-            };
-            merged.heroVideoUrl = '/assets/aistudio/brotherhood_hero_loop.mp4';
-            merged.heroVideoUrls = ['/assets/aistudio/brotherhood_hero_loop.mp4'];
-            setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
+            const cachedHero = readCachedHeroPlaylist();
+            if (
+              cachedHero &&
+              !cachedHero.explicitDefaultReset &&
+              cachedHero.heroVideoUrls.some((u) => u && u !== defaultHero)
+            ) {
+              merged.heroVideoUrls = cachedHero.heroVideoUrls;
+              merged.heroVideoUrl = cachedHero.heroVideoUrl;
+            } else {
+              const patch: Record<string, unknown> = {
+                heroVideoUrl: defaultHero,
+                heroVideoUrls: [defaultHero],
+              };
+              merged.heroVideoUrl = defaultHero;
+              merged.heroVideoUrls = [defaultHero];
+              setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
+            }
           } else if (cleanedHeroUrls.length > 0) {
-            merged.heroVideoUrls = cleanedHeroUrls;
-            merged.heroVideoUrl = validSingleHeroUrl || cleanedHeroUrls[0];
+            const isFirestoreOnlyDefault =
+              cleanedHeroUrls.length === 1 && cleanedHeroUrls[0] === defaultHero;
+            const cachedHero = readCachedHeroPlaylist();
+            const hasRecentLocalCustom =
+              Boolean(cachedHero) &&
+              !cachedHero!.explicitDefaultReset &&
+              Date.now() - cachedHero!.updatedAt < 20000 &&
+              cachedHero!.heroVideoUrls.some((u) => u && u !== defaultHero);
+
+            if (isFirestoreOnlyDefault && hasRecentLocalCustom) {
+              merged.heroVideoUrls = cachedHero!.heroVideoUrls;
+              merged.heroVideoUrl = cachedHero!.heroVideoUrl;
+            } else {
+              merged.heroVideoUrls = cleanedHeroUrls;
+              merged.heroVideoUrl = validSingleHeroUrl || cleanedHeroUrls[0];
+              writeCachedHeroPlaylist(
+                merged.heroVideoUrls,
+                merged.heroVideoUrl,
+                isFirestoreOnlyDefault
+              );
+            }
           } else if (validSingleHeroUrl) {
             merged.heroVideoUrls = [validSingleHeroUrl];
             merged.heroVideoUrl = validSingleHeroUrl;
+            writeCachedHeroPlaylist(
+              merged.heroVideoUrls,
+              merged.heroVideoUrl,
+              validSingleHeroUrl === defaultHero
+            );
           }
           setSettings(merged);
           if (merged.supabaseUrl || merged.supabaseAnonKey || merged.supabaseBucket) {
@@ -628,45 +722,61 @@ export default function App() {
   };
 
   const handleSaveSettings = async (newSettings: Settings) => {
-    const cleanSettings = stripUndefined(newSettings);
-    setSettings((prev) => ({ ...prev, ...cleanSettings }));
+    const { studioGallery: nextGallery, ...settingsWithoutGallery } = stripUndefined(newSettings);
+    const cleanSettings = settingsWithoutGallery as Settings;
+
+    const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+    const nextHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
+      ? normalizeHeroMediaList(cleanSettings.heroVideoUrls)
+      : cleanSettings.heroVideoUrl
+      ? normalizeHeroMediaList([cleanSettings.heroVideoUrl])
+      : undefined;
+    if (nextHeroUrls) {
+      cleanSettings.heroVideoUrls = nextHeroUrls;
+      cleanSettings.heroVideoUrl = nextHeroUrls[0] || normalizeMediaUrlInput(cleanSettings.heroVideoUrl);
+      const explicitDefaultReset =
+        nextHeroUrls.length === 1 && nextHeroUrls[0] === defaultHero;
+      writeCachedHeroPlaylist(nextHeroUrls, cleanSettings.heroVideoUrl, explicitDefaultReset);
+    }
+
+    setSettings((prev) => ({
+      ...prev,
+      ...cleanSettings,
+      ...(nextGallery ? { studioGallery: nextGallery } : {}),
+    }));
     if (
-      (cleanSettings as Settings).supabaseUrl !== undefined ||
-      (cleanSettings as Settings).supabaseAnonKey !== undefined ||
-      (cleanSettings as Settings).supabaseBucket !== undefined
+      cleanSettings.supabaseUrl !== undefined ||
+      cleanSettings.supabaseAnonKey !== undefined ||
+      cleanSettings.supabaseBucket !== undefined
     ) {
       updateSupabaseConfig({
-        url: (cleanSettings as Settings).supabaseUrl,
-        anonKey: (cleanSettings as Settings).supabaseAnonKey,
-        bucket: (cleanSettings as Settings).supabaseBucket,
+        url: cleanSettings.supabaseUrl,
+        anonKey: cleanSettings.supabaseAnonKey,
+        bucket: cleanSettings.supabaseBucket,
       });
     }
     try {
-      if ((cleanSettings as Settings).whatsappNumber !== undefined) {
-        if ((cleanSettings as Settings).whatsappNumber) {
-          localStorage.setItem('brotherhood_whatsapp_number', (cleanSettings as Settings).whatsappNumber!);
+      if (cleanSettings.whatsappNumber !== undefined) {
+        if (cleanSettings.whatsappNumber) {
+          localStorage.setItem('brotherhood_whatsapp_number', cleanSettings.whatsappNumber);
         } else {
           localStorage.removeItem('brotherhood_whatsapp_number');
         }
       }
     } catch {}
     try {
-      try {
-        await setDoc(doc(db, 'settings', 'global'), cleanSettings as any, { merge: true });
-      } catch (writeErr) {
-        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
-        // If inline studioGallery/image data URLs pushed settings/global past Firestore's 1MB limit,
-        // retry without inline studioGallery payload so hero settings still persist reliably.
-        if (msg.includes('exceeds') || msg.includes('maximum allowed size') || msg.includes('invalid-argument')) {
-          const { studioGallery: _omitGallery, ...compactSettings } = cleanSettings as Settings;
-          await setDoc(doc(db, 'settings', 'global'), compactSettings as any, { merge: true });
-        } else {
-          throw writeErr;
-        }
-      }
-      await syncSettingsToSupabase(cleanSettings as Settings);
-      if ((cleanSettings as Settings).studioGallery) {
-        await syncStudioGalleryToSupabase((cleanSettings as Settings).studioGallery!);
+      // Remove redundant ~725KB studioGallery copy from settings/global (studio_gallery/config is its own doc)
+      await setDoc(
+        doc(db, 'settings', 'global'),
+        {
+          ...cleanSettings,
+          studioGallery: deleteField(),
+        } as any,
+        { merge: true }
+      );
+      await syncSettingsToSupabase(cleanSettings);
+      if (nextGallery) {
+        await syncStudioGalleryToSupabase(nextGallery);
       }
     } catch (error) {
       handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
