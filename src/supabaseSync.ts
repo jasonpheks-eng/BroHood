@@ -1038,13 +1038,27 @@ export async function uploadMediaToSupabase(
   }
 }
 
-type BroadcastTopic = 'settings_sync' | 'products_sync' | 'creators_sync' | 'studio_gallery_sync';
+type BroadcastTopic = 'settings_sync' | 'products_sync' | 'creators_sync' | 'studio_gallery_sync' | 'full_sync';
 
 let activeLiveChannel: RealtimeChannel | null = null;
 let activeLiveClientRef: unknown = null;
 const galleryUpdateSubscribers = new Set<(gallery: StudioGalleryState) => void>();
+const BROWSER_CHANNEL_NAME = 'brotherhood-live-sync';
 
-async function emitRealtimeBroadcast(topic: BroadcastTopic, data?: unknown) {
+function postLocalBrowserSync(topic: BroadcastTopic, payloadObj: Record<string, unknown>) {
+  if (typeof window === 'undefined') return;
+  try {
+    if (typeof BroadcastChannel !== 'undefined') {
+      const bc = new BroadcastChannel(BROWSER_CHANNEL_NAME);
+      bc.postMessage({ topic, payload: payloadObj });
+      bc.close();
+    }
+  } catch {
+    // Ignore BroadcastChannel restriction
+  }
+}
+
+async function emitRealtimeBroadcast(topic: BroadcastTopic, data?: unknown): Promise<boolean> {
   const payloadObj: Record<string, unknown> = {
     originId: REALTIME_TAB_ID,
     updatedAt: Date.now(),
@@ -1065,36 +1079,68 @@ async function emitRealtimeBroadcast(topic: BroadcastTopic, data?: unknown) {
     payloadObj.refetch = true;
   }
 
+  postLocalBrowserSync(topic, payloadObj);
+
   try {
     const client = getSupabaseClient();
     if (activeLiveChannel && activeLiveClientRef === client) {
-      await activeLiveChannel.send({
+      const res = await activeLiveChannel.send({
         type: 'broadcast',
         event: topic,
         payload: payloadObj,
       });
-      return;
+      return res === 'ok';
     }
 
-    // Fallback: open temporary channel if caller emits before main subscription attaches
-    const tempChannel = client.channel(`brotherhood-live-emit-${Date.now()}`);
-    tempChannel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        try {
-          await tempChannel.send({
-            type: 'broadcast',
-            event: topic,
-            payload: payloadObj,
-          });
-        } catch {
-          // Ignore transient broadcast errors
-        } finally {
-          client.removeChannel(tempChannel).catch(() => {});
+    // Fallback: open temporary channel only if main subscription is not mounted yet
+    return await new Promise<boolean>((resolve) => {
+      let settled = false;
+      const tempChannel = client.channel('brotherhood-live-sync', {
+        config: { broadcast: { self: false } },
+      });
+      const timeoutId = setTimeout(() => {
+        if (!settled) {
+          settled = true;
+          if (activeLiveChannel !== tempChannel) {
+            client.removeChannel(tempChannel).catch(() => {});
+          }
+          resolve(false);
         }
-      }
+      }, 4500);
+
+      tempChannel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED' && !settled) {
+          try {
+            const res = await tempChannel.send({
+              type: 'broadcast',
+              event: topic,
+              payload: payloadObj,
+            });
+            settled = true;
+            clearTimeout(timeoutId);
+            resolve(res === 'ok');
+          } catch {
+            settled = true;
+            clearTimeout(timeoutId);
+            resolve(false);
+          } finally {
+            if (activeLiveChannel !== tempChannel) {
+              client.removeChannel(tempChannel).catch(() => {});
+            }
+          }
+        } else if ((status === 'CHANNEL_ERROR' || status === 'TIMED_OUT' || status === 'CLOSED') && !settled) {
+          settled = true;
+          clearTimeout(timeoutId);
+          if (activeLiveChannel !== tempChannel) {
+            client.removeChannel(tempChannel).catch(() => {});
+          }
+          resolve(false);
+        }
+      });
     });
   } catch (err) {
     console.warn('[Supabase Realtime] Broadcast send notice:', err);
+    return false;
   }
 }
 
@@ -1116,14 +1162,15 @@ export async function syncProductToSupabase(product: Product): Promise<boolean> 
       details: product.details || null,
       updated_at: new Date().toISOString(),
     });
+    void emitRealtimeBroadcast('products_sync');
     if (error) {
       console.warn('Supabase product sync warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('products_sync');
     return true;
   } catch (err) {
     console.warn('Supabase product sync error:', err);
+    void emitRealtimeBroadcast('products_sync');
     return false;
   }
 }
@@ -1131,36 +1178,37 @@ export async function syncProductToSupabase(product: Product): Promise<boolean> 
 export async function deleteProductFromSupabase(productId: string): Promise<boolean> {
   try {
     const { error } = await getSupabaseClient().from('products').delete().eq('id', productId);
+    void emitRealtimeBroadcast('products_sync');
     if (error) {
       console.warn('Supabase product delete warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('products_sync');
     return true;
   } catch (err) {
     console.warn('Supabase product delete error:', err);
+    void emitRealtimeBroadcast('products_sync');
     return false;
   }
 }
 
 export async function syncSettingsToSupabase(settings: Settings): Promise<boolean> {
+  const updatedAtMs = settings.settingsUpdatedAt || Date.now();
+  const { studioGallery: _omittedGallery, ...settingsPayload } = settings;
+  const normalizedUrls = Array.isArray(settingsPayload.heroVideoUrls)
+    ? normalizeHeroMediaList(settingsPayload.heroVideoUrls)
+    : settingsPayload.heroVideoUrl
+    ? normalizeHeroMediaList([settingsPayload.heroVideoUrl])
+    : [];
+  const primaryHero = normalizedUrls[0] || normalizeMediaUrlInput(settingsPayload.heroVideoUrl) || undefined;
+
+  const cleanSettingsRecord: Settings = {
+    ...settingsPayload,
+    heroVideoUrls: normalizedUrls.length > 0 ? normalizedUrls : settingsPayload.heroVideoUrls,
+    heroVideoUrl: primaryHero ?? settingsPayload.heroVideoUrl,
+    settingsUpdatedAt: updatedAtMs,
+  };
+
   try {
-    const updatedAtMs = settings.settingsUpdatedAt || Date.now();
-    const { studioGallery: _omittedGallery, ...settingsPayload } = settings;
-    const normalizedUrls = Array.isArray(settingsPayload.heroVideoUrls)
-      ? normalizeHeroMediaList(settingsPayload.heroVideoUrls)
-      : settingsPayload.heroVideoUrl
-      ? normalizeHeroMediaList([settingsPayload.heroVideoUrl])
-      : [];
-    const primaryHero = normalizedUrls[0] || normalizeMediaUrlInput(settingsPayload.heroVideoUrl) || undefined;
-
-    const cleanSettingsRecord: Settings = {
-      ...settingsPayload,
-      heroVideoUrls: normalizedUrls.length > 0 ? normalizedUrls : settingsPayload.heroVideoUrls,
-      heroVideoUrl: primaryHero ?? settingsPayload.heroVideoUrl,
-      settingsUpdatedAt: updatedAtMs,
-    };
-
     const { error } = await getSupabaseClient().from('settings').upsert({
       id: 'global',
       brand_name: cleanSettingsRecord.brandName,
@@ -1174,14 +1222,15 @@ export async function syncSettingsToSupabase(settings: Settings): Promise<boolea
       raw_settings: cleanSettingsRecord,
       updated_at: new Date(updatedAtMs).toISOString(),
     });
+    void emitRealtimeBroadcast('settings_sync', cleanSettingsRecord);
     if (error) {
       console.warn('Supabase settings sync warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('settings_sync', cleanSettingsRecord);
     return true;
   } catch (err) {
     console.warn('Supabase settings sync error:', err);
+    void emitRealtimeBroadcast('settings_sync', cleanSettingsRecord);
     return false;
   }
 }
@@ -1202,14 +1251,15 @@ export async function syncCreatorPostToSupabase(post: CreatorPost): Promise<bool
       featured: post.featured ?? true,
       updated_at: new Date().toISOString(),
     });
+    void emitRealtimeBroadcast('creators_sync');
     if (error) {
       console.warn('Supabase creator post sync warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('creators_sync');
     return true;
   } catch (err) {
     console.warn('Supabase creator post sync error:', err);
+    void emitRealtimeBroadcast('creators_sync');
     return false;
   }
 }
@@ -1217,14 +1267,15 @@ export async function syncCreatorPostToSupabase(post: CreatorPost): Promise<bool
 export async function deleteCreatorPostFromSupabase(postId: string): Promise<boolean> {
   try {
     const { error } = await getSupabaseClient().from('creators_club').delete().eq('id', postId);
+    void emitRealtimeBroadcast('creators_sync');
     if (error) {
       console.warn('Supabase creator post delete warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('creators_sync');
     return true;
   } catch (err) {
     console.warn('Supabase creator post delete error:', err);
+    void emitRealtimeBroadcast('creators_sync');
     return false;
   }
 }
@@ -1243,14 +1294,15 @@ export async function syncStudioGalleryToSupabase(gallery: StudioGalleryState): 
       raw_gallery: gallery,
       updated_at: new Date().toISOString(),
     });
+    void emitRealtimeBroadcast('studio_gallery_sync', gallery);
     if (error) {
       console.warn('Supabase studio gallery sync warning:', error.message);
       return false;
     }
-    void emitRealtimeBroadcast('studio_gallery_sync', gallery);
     return true;
   } catch (err) {
     console.warn('Supabase studio gallery sync error:', err);
+    void emitRealtimeBroadcast('studio_gallery_sync', gallery);
     return false;
   }
 }
@@ -1508,11 +1560,19 @@ export function subscribeToSupabaseRealtime(callbacks: SupabaseRealtimeCallbacks
       })
       .on('broadcast', { event: 'products_sync' }, async ({ payload }) => {
         if (disposed || payload?.originId === REALTIME_TAB_ID) return;
+        if (Array.isArray(payload?.data)) {
+          callbacks.onProducts(payload.data as Product[]);
+          return;
+        }
         const fresh = await fetchSupabaseProducts();
         if (!disposed && fresh) callbacks.onProducts(fresh);
       })
       .on('broadcast', { event: 'creators_sync' }, async ({ payload }) => {
         if (disposed || payload?.originId === REALTIME_TAB_ID) return;
+        if (Array.isArray(payload?.data)) {
+          callbacks.onCreators(payload.data as CreatorPost[]);
+          return;
+        }
         const fresh = await fetchSupabaseCreatorPosts();
         if (!disposed && fresh) callbacks.onCreators(fresh);
       })
@@ -1524,6 +1584,25 @@ export function subscribeToSupabaseRealtime(callbacks: SupabaseRealtimeCallbacks
         }
         const fresh = await fetchSupabaseStudioGallery();
         if (!disposed && fresh) notifyGalleryListeners(fresh);
+      })
+      .on('broadcast', { event: 'full_sync' }, async ({ payload }) => {
+        if (disposed || payload?.originId === REALTIME_TAB_ID) return;
+        const bundle = payload?.data as
+          | {
+              settings?: Settings;
+              studioGallery?: StudioGalleryState;
+              products?: Product[];
+              creatorPosts?: CreatorPost[];
+            }
+          | undefined;
+        if (bundle && typeof bundle === 'object') {
+          if (bundle.settings) callbacks.onSettings(bundle.settings);
+          if (bundle.studioGallery) notifyGalleryListeners(bundle.studioGallery);
+          if (Array.isArray(bundle.products)) callbacks.onProducts(bundle.products);
+          if (Array.isArray(bundle.creatorPosts)) callbacks.onCreators(bundle.creatorPosts);
+        } else {
+          await pullFreshAll();
+        }
       })
       // 2. Database row-level postgres_changes listeners
       .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, async (payload) => {
@@ -1584,6 +1663,44 @@ export function subscribeToSupabaseRealtime(callbacks: SupabaseRealtimeCallbacks
 
   attachChannel();
 
+  // Instant cross-page / multi-tab synchronization in the same browser
+  let localBroadcastChannel: BroadcastChannel | null = null;
+  if (typeof window !== 'undefined' && typeof BroadcastChannel !== 'undefined') {
+    try {
+      localBroadcastChannel = new BroadcastChannel(BROWSER_CHANNEL_NAME);
+      localBroadcastChannel.onmessage = (event) => {
+        if (disposed) return;
+        const { topic, payload } = (event.data || {}) as {
+          topic?: BroadcastTopic;
+          payload?: { originId?: string; data?: unknown };
+        };
+        if (!topic || !payload || payload.originId === REALTIME_TAB_ID) return;
+        if (topic === 'settings_sync' && payload.data && typeof payload.data === 'object') {
+          callbacks.onSettings(payload.data as Settings);
+        } else if (topic === 'products_sync' && Array.isArray(payload.data)) {
+          callbacks.onProducts(payload.data as Product[]);
+        } else if (topic === 'creators_sync' && Array.isArray(payload.data)) {
+          callbacks.onCreators(payload.data as CreatorPost[]);
+        } else if (topic === 'studio_gallery_sync' && payload.data && typeof payload.data === 'object') {
+          notifyGalleryListeners(payload.data as StudioGalleryState);
+        } else if (topic === 'full_sync' && payload.data && typeof payload.data === 'object') {
+          const bundle = payload.data as {
+            settings?: Settings;
+            studioGallery?: StudioGalleryState;
+            products?: Product[];
+            creatorPosts?: CreatorPost[];
+          };
+          if (bundle.settings) callbacks.onSettings(bundle.settings);
+          if (bundle.studioGallery) notifyGalleryListeners(bundle.studioGallery);
+          if (Array.isArray(bundle.products)) callbacks.onProducts(bundle.products);
+          if (Array.isArray(bundle.creatorPosts)) callbacks.onCreators(bundle.creatorPosts);
+        }
+      };
+    } catch {
+      localBroadcastChannel = null;
+    }
+  }
+
   const unsubscribeConfig = onSupabaseConfigChange(() => {
     if (disposed) return;
     attachChannel();
@@ -1607,6 +1724,11 @@ export function subscribeToSupabaseRealtime(callbacks: SupabaseRealtimeCallbacks
   return () => {
     disposed = true;
     unsubscribeConfig();
+    if (localBroadcastChannel) {
+      try {
+        localBroadcastChannel.close();
+      } catch {}
+    }
     if (typeof window !== 'undefined') {
       window.removeEventListener('online', handleVisibilityOrOnline);
       window.removeEventListener('focus', handleVisibilityOrOnline);
@@ -1618,24 +1740,84 @@ export function subscribeToSupabaseRealtime(callbacks: SupabaseRealtimeCallbacks
   };
 }
 
+export interface ForceSyncResult {
+  settingsSynced: boolean;
+  gallerySynced: boolean;
+  productsSynced: number;
+  creatorsSynced: number;
+  broadcastSent: boolean;
+  missingTables: string[];
+  errorMessage?: string;
+}
+
+export async function forceSyncAllToSupabase(payload: {
+  products?: Product[];
+  settings?: Settings;
+  creatorPosts?: CreatorPost[];
+  studioGallery?: StudioGalleryState;
+}): Promise<ForceSyncResult> {
+  const missingTables: string[] = [];
+  let settingsSynced = false;
+  let gallerySynced = false;
+  let productsSynced = 0;
+  let creatorsSynced = 0;
+  let errorMessage: string | undefined;
+
+  if (payload.settings) {
+    settingsSynced = await syncSettingsToSupabase(payload.settings);
+    if (!settingsSynced) missingTables.push('settings');
+  }
+  if (payload.studioGallery) {
+    gallerySynced = await syncStudioGalleryToSupabase(payload.studioGallery);
+    if (!gallerySynced) missingTables.push('studio_gallery');
+  }
+  if (payload.products && payload.products.length > 0) {
+    const results = await Promise.all(
+      payload.products.filter((p) => Boolean(p.id)).map((p) => syncProductToSupabase(p))
+    );
+    productsSynced = results.filter(Boolean).length;
+    if (results.length > 0 && productsSynced === 0) missingTables.push('products');
+  }
+  if (payload.creatorPosts && payload.creatorPosts.length > 0) {
+    const results = await Promise.all(
+      payload.creatorPosts.filter((cp) => Boolean(cp.id)).map((cp) => syncCreatorPostToSupabase(cp))
+    );
+    creatorsSynced = results.filter(Boolean).length;
+    if (results.length > 0 && creatorsSynced === 0) missingTables.push('creators_club');
+  }
+
+  // Emit full live sync packet across all connected devices & browser pages/tabs
+  const [broadcastOk] = await Promise.all([
+    emitRealtimeBroadcast('full_sync', {
+      settings: payload.settings,
+      studioGallery: payload.studioGallery,
+      products: payload.products,
+      creatorPosts: payload.creatorPosts,
+    }),
+    payload.products ? emitRealtimeBroadcast('products_sync', payload.products) : Promise.resolve(true),
+    payload.creatorPosts ? emitRealtimeBroadcast('creators_sync', payload.creatorPosts) : Promise.resolve(true),
+  ]);
+
+  if (missingTables.length > 0) {
+    errorMessage = `Supabase table(s) not initialized yet: ${missingTables.join(', ')}. Live Realtime Broadcast sent; run supabase_schema.sql in Supabase SQL Editor for database table persistence.`;
+  }
+
+  return {
+    settingsSynced,
+    gallerySynced,
+    productsSynced,
+    creatorsSynced,
+    broadcastSent: broadcastOk,
+    missingTables,
+    errorMessage,
+  };
+}
+
 export async function syncAllToSupabase(payload: {
   products?: Product[];
   settings?: Settings;
   creatorPosts?: CreatorPost[];
   studioGallery?: StudioGalleryState;
 }) {
-  const tasks: Promise<unknown>[] = [];
-  if (payload.settings) tasks.push(syncSettingsToSupabase(payload.settings));
-  if (payload.studioGallery) tasks.push(syncStudioGalleryToSupabase(payload.studioGallery));
-  if (payload.products) {
-    for (const p of payload.products) {
-      if (p.id) tasks.push(syncProductToSupabase(p));
-    }
-  }
-  if (payload.creatorPosts) {
-    for (const cp of payload.creatorPosts) {
-      if (cp.id) tasks.push(syncCreatorPostToSupabase(cp));
-    }
-  }
-  await Promise.allSettled(tasks);
+  await forceSyncAllToSupabase(payload);
 }

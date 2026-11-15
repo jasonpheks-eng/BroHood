@@ -49,6 +49,7 @@ import {
   verifySupabaseApiConnection,
   traceUploadAttempt,
   resetSupabaseBucketCache,
+  forceSyncAllToSupabase,
   SupabaseStorageDiagnosticReport,
   SupabaseDiagnosticLogEntry,
   SupabaseConnectionVerification,
@@ -122,6 +123,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [isSettingsDirty, setIsSettingsDirty] = useState(false);
   const [savingProduct, setSavingProduct] = useState(false);
   const [savingSettings, setSavingSettings] = useState(false);
+  const [syncingNow, setSyncingNow] = useState(false);
   const [savingWhatsapp, setSavingWhatsapp] = useState(false);
   const [uploadingHeroMedia, setUploadingHeroMedia] = useState(false);
   const [uploadProgress, setUploadProgress] = useState<number | null>(null);
@@ -180,6 +182,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [uploadingHeroMedia]);
 
   const lastSavedWhatsappRef = React.useRef((settings.whatsappNumber || '').trim());
+  const studioGalleryCommitRef = React.useRef<(() => Promise<import('../../types').StudioGalleryState>) | null>(null);
 
   const { galleryState, onSave: saveGalleryState } = useStudioGalleryState('brotherhood_studio_gallery_v1', {
     cloudState: settings.studioGallery,
@@ -249,8 +252,17 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   }, [formSettings.whatsappNumber, persistWhatsappNumber]);
 
   const handleBackToStoreWithFlush = async () => {
-    const cleanDraft = (formSettings.whatsappNumber || '').trim();
-    if (cleanDraft !== lastSavedWhatsappRef.current) {
+    const cleanDraft = (formSettingsRef.current.whatsappNumber || '').trim();
+    if (isSettingsDirty && !uploadingHeroMediaRef.current) {
+      try {
+        await persistDraftSettings(formSettingsRef.current);
+      } catch {
+        // Fallback to whatsapp flush if full flush encountered transient issue
+        if (cleanDraft !== lastSavedWhatsappRef.current) {
+          await persistWhatsappNumber(cleanDraft, false);
+        }
+      }
+    } else if (cleanDraft !== lastSavedWhatsappRef.current) {
       await persistWhatsappNumber(cleanDraft, false);
     }
     onBackToStore();
@@ -746,18 +758,16 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     return '';
   };
 
-  // Submit Store Settings
-  const handleSubmitSettings = async (e?: React.FormEvent) => {
-    if (e) e.preventDefault();
-    setSavingSettings(true);
-    try {
-      const sanitized: any = { ...formSettings };
+  const persistDraftSettings = React.useCallback(
+    async (draft: Settings): Promise<Settings> => {
+      const sanitized: any = { ...draft };
       for (const key of Object.keys(sanitized)) {
         if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:')) {
           sanitized[key] = await resolveCrossDeviceUrl(sanitized[key], `settings_${key}`);
         }
       }
       if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
+        const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
         const cleanedUrls = await Promise.all(
           sanitized.heroVideoUrls.map(async (url: string, i: number) => {
             const cleanInput = normalizeMediaUrlInput(url);
@@ -769,8 +779,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           })
         );
         const filtered = normalizeHeroMediaList(cleanedUrls);
-        sanitized.heroVideoUrls =
-          filtered.length > 0 ? filtered : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
+        const customOnly = filtered.filter((u) => u !== defaultHero);
+        const finalUrls = customOnly.length > 0 ? customOnly : filtered;
+        sanitized.heroVideoUrls = finalUrls.length > 0 ? finalUrls : [defaultHero];
         sanitized.heroVideoUrl = sanitized.heroVideoUrls[0];
       }
 
@@ -807,13 +818,71 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       await onSaveSettings(sanitized);
       lastSavedWhatsappRef.current = (sanitized.whatsappNumber || '').trim();
       setRawFormSettings(sanitized);
+      formSettingsRef.current = sanitized;
       setIsSettingsDirty(false);
-      showToast('Settings saved & synced across devices');
+      return sanitized as Settings;
+    },
+    [onSaveSettings]
+  );
+
+  // Submit Store Settings (Save action)
+  const handleSubmitSettings = async (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
+    setSavingSettings(true);
+    try {
+      await persistDraftSettings(formSettingsRef.current);
+      showToast('Settings saved!');
     } catch (err) {
       console.error('Failed to save settings', err);
       showToast('Failed to save settings.');
     } finally {
       setSavingSettings(false);
+    }
+  };
+
+  // Top-bar Save action (saves active section & any pending settings/gallery edits)
+  const handleQuickSave = async () => {
+    if (savingSettings || syncingNow) return;
+    setSavingSettings(true);
+    try {
+      if (activeTab === 'gallery' && studioGalleryCommitRef.current) {
+        await studioGalleryCommitRef.current();
+      }
+      await persistDraftSettings(formSettingsRef.current);
+      showToast('Changes saved!');
+    } catch (err) {
+      console.error('Save failed:', err);
+      showToast('Failed to save changes.');
+    } finally {
+      setSavingSettings(false);
+    }
+  };
+
+  // Explicit Sync action: saves pending edits and syncs all devices & pages via Firestore + Supabase Realtime + BroadcastChannel
+  const handleSyncNow = async (committedGalleryOverride?: import('../../types').StudioGalleryState) => {
+    if (syncingNow) return;
+    setSyncingNow(true);
+    try {
+      const latestGallery =
+        committedGalleryOverride ||
+        (studioGalleryCommitRef.current ? await studioGalleryCommitRef.current() : galleryState);
+      const savedSettings = await persistDraftSettings(formSettingsRef.current);
+      const syncResult = await forceSyncAllToSupabase({
+        settings: savedSettings,
+        studioGallery: latestGallery,
+        products,
+        creatorPosts,
+      });
+      if (syncResult.settingsSynced || syncResult.broadcastSent) {
+        showToast('Synced across all devices & pages!');
+      } else {
+        showToast('Saved & pushed live to connected pages!');
+      }
+    } catch (err) {
+      console.error('Sync failed:', err);
+      showToast('Sync failed — check connection & try again.');
+    } finally {
+      setSyncingNow(false);
     }
   };
 
@@ -906,13 +975,33 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           >
             <ArrowLeft size={14} /> Exit Admin
           </button>
-          <div className="flex items-center gap-3">
-            <span className="text-[10px] font-bold uppercase tracking-widest text-zinc-400">
+          <div className="flex flex-wrap items-center gap-2">
+            <span className="hidden sm:inline text-[10px] font-bold uppercase tracking-widest text-zinc-400 mr-1">
               Admin · {settings.brandName || 'BROTHERHOOD'}
             </span>
             <button
+              type="button"
+              onClick={handleQuickSave}
+              disabled={savingSettings || syncingNow}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-white hover:bg-zinc-100 text-black border border-zinc-300 text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-50"
+              title="Save current changes"
+            >
+              <Save size={12} />
+              {savingSettings ? 'Saving...' : 'Save'}
+            </button>
+            <button
+              type="button"
+              onClick={() => void handleSyncNow()}
+              disabled={syncingNow || savingSettings}
+              className="flex items-center gap-1.5 px-3.5 py-1.5 bg-black hover:bg-zinc-800 text-white text-[10px] font-black uppercase tracking-wider transition-colors disabled:opacity-50"
+              title="Sync updates live across all connected devices and pages"
+            >
+              <RefreshCw size={12} className={syncingNow ? 'animate-spin' : ''} />
+              {syncingNow ? 'Syncing...' : 'Sync'}
+            </button>
+            <button
               onClick={handleBackToStoreWithFlush}
-              className="flex items-center gap-1.5 px-3 py-1 bg-zinc-100 hover:bg-black hover:text-white text-zinc-700 text-[10px] font-black uppercase tracking-wider transition-colors border border-zinc-200"
+              className="flex items-center gap-1.5 px-3 py-1.5 bg-zinc-100 hover:bg-black hover:text-white text-zinc-700 text-[10px] font-black uppercase tracking-wider transition-colors border border-zinc-200"
               title="Lock Admin Session"
             >
               <Lock size={12} /> Lock Admin
@@ -979,6 +1068,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           <StudioGalleryAdmin
             state={galleryState}
             onSaveAndApply={saveGalleryState}
+            onSyncAll={handleSyncNow}
+            commitRef={studioGalleryCommitRef}
             onShowToast={showToast}
           />
         </div>
@@ -1191,13 +1282,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   Control hero media playlist, campaign visuals, and section color schemes.
                 </p>
               </div>
-              <button
-                type="submit"
-                disabled={savingSettings}
-                className="w-full sm:w-auto justify-center bg-black text-white px-6 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-zinc-800 transition-colors flex items-center gap-2 shadow-sm shrink-0"
-              >
-                <Save size={14} /> {savingSettings ? 'Saving...' : 'Save Settings'}
-              </button>
+              <div className="flex flex-wrap items-center gap-2 shrink-0 w-full sm:w-auto">
+                <button
+                  type="submit"
+                  disabled={savingSettings || syncingNow}
+                  className="flex-1 sm:flex-initial justify-center border border-zinc-300 bg-white text-black px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] hover:border-black transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+                >
+                  <Save size={14} /> {savingSettings ? 'Saving...' : 'Save'}
+                </button>
+                <button
+                  type="button"
+                  onClick={() => void handleSyncNow()}
+                  disabled={syncingNow || savingSettings}
+                  className="flex-1 sm:flex-initial justify-center bg-black text-white px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-zinc-800 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+                >
+                  <RefreshCw size={14} className={syncingNow ? 'animate-spin' : ''} />
+                  {syncingNow ? 'Syncing...' : 'Sync'}
+                </button>
+              </div>
             </div>
 
             {/* Brand & Section Colors */}
@@ -1653,6 +1755,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   </button>
                   <button
                     type="button"
+                    onClick={() => applyAndSyncHeroSettings({}, 'Hero changes saved!')}
+                    disabled={savingSettings || syncingNow || uploadingHeroMedia}
+                    className="border border-zinc-300 bg-white hover:border-black px-3 py-2 text-[10px] font-black uppercase tracking-widest text-black flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-50"
+                  >
+                    <Save size={12} />
+                    {savingSettings ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => void handleSyncNow()}
+                    disabled={syncingNow || savingSettings}
+                    className="bg-black hover:bg-zinc-800 text-white px-3 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 whitespace-nowrap transition-colors disabled:opacity-50"
+                  >
+                    <RefreshCw size={12} className={syncingNow ? 'animate-spin' : ''} />
+                    {syncingNow ? 'Syncing...' : 'Sync'}
+                  </button>
+                  <button
+                    type="button"
                     onClick={() =>
                       applyAndSyncHeroSettings(
                         {
@@ -1889,6 +2009,26 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               heroVideoUrls: next,
                               ...(i === 0 ? { heroVideoUrl: nextVal } : {}),
                             });
+                          }}
+                          onBlur={() => {
+                            const currentArr = formSettingsRef.current.heroVideoUrls || [];
+                            const usable = normalizeHeroMediaList(currentArr);
+                            const customOnly = usable.filter(
+                              (u) => u !== '/assets/aistudio/brotherhood_hero_loop.mp4'
+                            );
+                            const finalUrls = customOnly.length > 0 ? customOnly : usable;
+                            if (
+                              finalUrls.length > 0 &&
+                              finalUrls.join('|') !== (settingsRef.current.heroVideoUrls || []).join('|')
+                            ) {
+                              void applyAndSyncHeroSettings(
+                                {
+                                  heroVideoUrls: finalUrls,
+                                  heroVideoUrl: finalUrls[0],
+                                },
+                                'Hero media link saved & synced'
+                              );
+                            }
                           }}
                           className="flex-1 min-w-0 border border-zinc-200 p-2 text-xs font-mono focus:outline-none focus:border-black bg-white"
                         />
@@ -2411,14 +2551,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 <span className="text-[11px] text-zinc-500">
                   Zoom out to 0.50x or zoom in to 2.50x, then save to apply live on desktop and mobile.
                 </span>
-                <button
-                  type="button"
-                  disabled={savingSettings || uploadingHeroMedia}
-                  onClick={() => applyAndSyncHeroSettings({}, 'Hero media & framing saved & synced')}
-                  className="bg-black text-white hover:bg-zinc-800 px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
-                >
-                  <Save size={12} /> {savingSettings ? 'Saving...' : 'Save Hero Settings'}
-                </button>
+                <div className="flex flex-wrap items-center gap-2">
+                  <button
+                    type="button"
+                    disabled={savingSettings || syncingNow || uploadingHeroMedia}
+                    onClick={() => applyAndSyncHeroSettings({}, 'Hero changes saved!')}
+                    className="border border-zinc-300 bg-white text-black hover:border-black px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <Save size={12} /> {savingSettings ? 'Saving...' : 'Save'}
+                  </button>
+                  <button
+                    type="button"
+                    disabled={syncingNow || savingSettings || uploadingHeroMedia}
+                    onClick={() => void handleSyncNow()}
+                    className="bg-black text-white hover:bg-zinc-800 px-4 py-2 text-[10px] font-black uppercase tracking-widest flex items-center gap-1.5 transition-colors disabled:opacity-50 whitespace-nowrap"
+                  >
+                    <RefreshCw size={12} className={syncingNow ? 'animate-spin' : ''} />
+                    {syncingNow ? 'Syncing...' : 'Sync'}
+                  </button>
+                </div>
               </div>
             </div>
 
@@ -2701,14 +2852,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               </div>
             </div>
 
-            {/* Bottom Save Action */}
-            <div className="flex justify-end pt-2">
+            {/* Bottom Save & Sync Actions */}
+            <div className="flex flex-wrap items-center justify-end gap-3 pt-2">
               <button
                 type="submit"
-                disabled={savingSettings}
-                className="w-full sm:w-auto justify-center bg-black text-white px-7 py-3 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-zinc-800 transition-colors flex items-center gap-2 shadow-sm"
+                disabled={savingSettings || syncingNow}
+                className="flex-1 sm:flex-initial justify-center border border-zinc-300 bg-white text-black px-6 py-3 text-[10px] font-black uppercase tracking-[0.2em] hover:border-black transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
               >
-                <Save size={14} /> {savingSettings ? 'Saving...' : 'Save Settings'}
+                <Save size={14} /> {savingSettings ? 'Saving...' : 'Save'}
+              </button>
+              <button
+                type="button"
+                onClick={() => void handleSyncNow()}
+                disabled={syncingNow || savingSettings}
+                className="flex-1 sm:flex-initial justify-center bg-black text-white px-7 py-3 text-[10px] font-black uppercase tracking-[0.2em] hover:bg-zinc-800 transition-colors flex items-center gap-2 shadow-sm disabled:opacity-50"
+              >
+                <RefreshCw size={14} className={syncingNow ? 'animate-spin' : ''} />
+                {syncingNow ? 'Syncing...' : 'Sync'}
               </button>
             </div>
           </form>

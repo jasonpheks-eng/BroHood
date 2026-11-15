@@ -324,6 +324,7 @@ export default function App() {
   const [quickViewProduct, setQuickViewProduct] = useState<Product | null>(null);
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
   const handledProductDeepLinkRef = React.useRef(false);
+  const latestSettingsTsRef = React.useRef<number>(0);
 
   // Open Product Detail modal automatically if ?product=<id> link is visited (e.g. from WhatsApp order)
   useEffect(() => {
@@ -337,6 +338,15 @@ export default function App() {
       setQuickViewProduct(matched);
     }
   }, [products]);
+
+  // Keep open Product Detail modal synced live if products update from another device or page
+  useEffect(() => {
+    if (!quickViewProduct?.id) return;
+    const updated = products.find((p) => p.id === quickViewProduct.id);
+    if (updated && JSON.stringify(updated) !== JSON.stringify(quickViewProduct)) {
+      setQuickViewProduct(updated);
+    }
+  }, [products, quickViewProduct]);
 
   // Sync Cart to LocalStorage
   useEffect(() => {
@@ -388,16 +398,22 @@ export default function App() {
 
     const applySupabaseSettings = (incoming: Settings) => {
       const incomingTs = Number(incoming.settingsUpdatedAt) || 0;
-      if (incomingTs > 0 && latestFirestoreSettingsTs > incomingTs + 500) {
+      const newestKnownTs = Math.max(latestFirestoreSettingsTs, latestSettingsTsRef.current);
+      if (newestKnownTs > 0 && (incomingTs === 0 || newestKnownTs > incomingTs + 500)) {
         return;
       }
       if (incomingTs > latestSupabaseSettingsTs) {
         latestSupabaseSettingsTs = incomingTs;
       }
+      if (incomingTs > latestSettingsTsRef.current) {
+        latestSettingsTsRef.current = incomingTs;
+      }
 
-      const cleanedHeroUrls = Array.isArray(incoming.heroVideoUrls)
+      const cleanedRawUrls = Array.isArray(incoming.heroVideoUrls)
         ? normalizeHeroMediaList(incoming.heroVideoUrls)
         : [];
+      const customOnlyUrls = cleanedRawUrls.filter((u) => u !== defaultHero);
+      const cleanedHeroUrls = customOnlyUrls.length > 0 ? customOnlyUrls : cleanedRawUrls;
       const cleanedSingleHero = incoming.heroVideoUrl
         ? normalizeMediaUrlInput(incoming.heroVideoUrl)
         : '';
@@ -410,21 +426,31 @@ export default function App() {
           : undefined;
       const finalHeroUrl = finalHeroUrls?.[0] || cleanedSingleHero || undefined;
 
-      if (finalHeroUrls && finalHeroUrls.length > 0) {
-        const isDefaultOnly = finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
-        writeCachedHeroPlaylist(finalHeroUrls, finalHeroUrl, isDefaultOnly);
-      }
+      // Never let an older/default-only Supabase snapshot overwrite an already customized local/Firestore playlist unless it carries a strictly newer timestamp
+      setSettings((prev) => {
+        const prevHasCustom = (prev.heroVideoUrls || []).some((u) => u && u !== defaultHero);
+        const incomingIsOnlyDefault =
+          (!finalHeroUrls || (finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero));
+        if (prevHasCustom && incomingIsOnlyDefault && incomingTs <= latestSettingsTsRef.current) {
+          return prev;
+        }
 
-      setSettings((prev) => ({
-        ...prev,
-        ...incoming,
-        ...(finalHeroUrls ? { heroVideoUrls: finalHeroUrls } : {}),
-        ...(finalHeroUrl !== undefined ? { heroVideoUrl: finalHeroUrl } : {}),
-        whatsappNumber:
-          incoming.whatsappNumber !== undefined
-            ? incoming.whatsappNumber
-            : prev.whatsappNumber || '',
-      }));
+        if (finalHeroUrls && finalHeroUrls.length > 0) {
+          const isDefaultOnly = finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
+          writeCachedHeroPlaylist(finalHeroUrls, finalHeroUrl, isDefaultOnly);
+        }
+
+        return {
+          ...prev,
+          ...incoming,
+          ...(finalHeroUrls ? { heroVideoUrls: finalHeroUrls } : {}),
+          ...(finalHeroUrl !== undefined ? { heroVideoUrl: finalHeroUrl } : {}),
+          whatsappNumber:
+            incoming.whatsappNumber !== undefined
+              ? incoming.whatsappNumber
+              : prev.whatsappNumber || '',
+        };
+      });
 
       if (incoming.supabaseUrl || incoming.supabaseAnonKey || incoming.supabaseBucket) {
         updateSupabaseConfig({
@@ -451,15 +477,19 @@ export default function App() {
         if (snap.exists()) {
           const data = snap.data() as any;
           const firestoreTs = Number(data.settingsUpdatedAt) || 0;
-          if (firestoreTs > 0 && latestSupabaseSettingsTs > firestoreTs + 500) {
+          const newestKnownTs = Math.max(latestSupabaseSettingsTs, latestSettingsTsRef.current);
+          if (newestKnownTs > 0 && (firestoreTs === 0 || newestKnownTs > firestoreTs + 500)) {
             return;
           }
           if (firestoreTs > latestFirestoreSettingsTs) {
             latestFirestoreSettingsTs = firestoreTs;
           }
+          if (firestoreTs > latestSettingsTsRef.current) {
+            latestSettingsTsRef.current = firestoreTs;
+          }
 
           const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
-          const cleanedHeroUrls = normalizeHeroMediaList(
+          const normalizedHeroUrls = normalizeHeroMediaList(
             heroUrls.filter(
               (u: unknown): u is string =>
                 typeof u === 'string' &&
@@ -468,6 +498,9 @@ export default function App() {
                 !u.includes('Scene-7')
             )
           );
+          const customOnlyFirestore = normalizedHeroUrls.filter((u) => u !== defaultHero);
+          const cleanedHeroUrls =
+            customOnlyFirestore.length > 0 ? customOnlyFirestore : normalizedHeroUrls;
           const rawSingleHero =
             typeof data.heroVideoUrl === 'string' &&
             data.heroVideoUrl.trim().length > 0 &&
@@ -475,7 +508,10 @@ export default function App() {
             !data.heroVideoUrl.includes('Scene-7')
               ? normalizeMediaUrlInput(data.heroVideoUrl)
               : '';
-          const validSingleHeroUrl = rawSingleHero;
+          const validSingleHeroUrl =
+            customOnlyFirestore.length > 0 && rawSingleHero === defaultHero
+              ? customOnlyFirestore[0]
+              : rawSingleHero;
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
           if (cleanedHeroUrls.length === 0 && !validSingleHeroUrl) {
@@ -796,16 +832,24 @@ export default function App() {
 
   const handleSaveSettings = async (newSettings: Settings) => {
     const { studioGallery: nextGallery, ...settingsWithoutGallery } = stripUndefined(newSettings);
+    const savedAt = Date.now();
+    latestSettingsTsRef.current = savedAt;
     const cleanSettings = {
       ...(settingsWithoutGallery as Settings),
-      settingsUpdatedAt: Date.now(),
+      settingsUpdatedAt: savedAt,
     };
 
     const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
-    const nextHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
+    const rawHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
       ? normalizeHeroMediaList(cleanSettings.heroVideoUrls)
       : cleanSettings.heroVideoUrl
       ? normalizeHeroMediaList([cleanSettings.heroVideoUrl])
+      : undefined;
+    const nextHeroUrls = rawHeroUrls
+      ? (() => {
+          const customOnly = rawHeroUrls.filter((u) => u !== defaultHero);
+          return customOnly.length > 0 ? customOnly : rawHeroUrls;
+        })()
       : undefined;
     if (nextHeroUrls) {
       cleanSettings.heroVideoUrls = nextHeroUrls;
@@ -864,6 +908,7 @@ export default function App() {
   const handleSaveWhatsappNumber = async (rawNumber: string) => {
     const cleanNumber = rawNumber.trim();
     const updatedAt = Date.now();
+    latestSettingsTsRef.current = updatedAt;
     const updatedSettings: Settings = {
       ...settings,
       whatsappNumber: cleanNumber,
@@ -901,6 +946,7 @@ export default function App() {
       bucket: keys.supabaseBucket,
     });
     const updatedAt = Date.now();
+    latestSettingsTsRef.current = updatedAt;
     const normalizedPayload = {
       supabaseUrl: updatedCfg.url,
       supabaseAnonKey: updatedCfg.anonKey,

@@ -4,6 +4,8 @@ import {
   Trash2,
   Upload,
   Check,
+  Save,
+  RefreshCw,
   RotateCcw,
   Image as ImageIcon,
   Video as VideoIcon,
@@ -27,6 +29,8 @@ import { compressImageForCrossDevice } from '../../utils';
 interface StudioGalleryAdminProps {
   state: StudioGalleryState;
   onSaveAndApply: (nextState: StudioGalleryState) => Promise<void> | void;
+  onSyncAll?: (committedGallery?: StudioGalleryState) => Promise<void> | void;
+  commitRef?: React.MutableRefObject<(() => Promise<StudioGalleryState>) | null>;
   onShowToast?: (msg: string) => void;
 }
 
@@ -71,11 +75,14 @@ const TEXT_POSITIONS: { value: GalleryTextPosition; label: string }[] = [
 export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
   state,
   onSaveAndApply,
+  onSyncAll,
+  commitRef,
   onShowToast,
 }) => {
   const [draft, setDraft] = useState<StudioGalleryState>(state);
   const [isDirty, setIsDirty] = useState(false);
   const [isSaving, setIsSaving] = useState(false);
+  const [isSyncing, setIsSyncing] = useState(false);
 
   // Sync external persistent state into draft when there are no pending unsaved edits
   useEffect(() => {
@@ -187,57 +194,90 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
     onShowToast?.('Reverted draft changes');
   };
 
+  const saveDraftAndReturn = async (showSavedToast = true): Promise<StudioGalleryState> => {
+    const sanitizedItems = await Promise.all(
+      draft.items.map(async (item, idx) => {
+        let mediaSrc = item.image || '';
+        const mediaType = inferMediaType(mediaSrc, item.mediaType);
+        if (mediaSrc.startsWith('data:')) {
+          const uploaded = await uploadMediaToSupabase(
+            mediaSrc,
+            item.mediaMetadata?.fileName || `studio_tile_${item.id || idx}`
+          );
+          if (uploaded.url) {
+            mediaSrc = uploaded.url;
+          } else if (mediaType === 'image') {
+            mediaSrc = await compressImageForCrossDevice(mediaSrc, 155000);
+          }
+        }
+        return {
+          id: item.id || `tile-${idx + 1}`,
+          title: item.title || '',
+          subtitle: item.subtitle || '',
+          image: mediaSrc,
+          mediaType,
+          ...(item.mediaMetadata ? { mediaMetadata: item.mediaMetadata } : {}),
+          size: item.size || '1x1',
+          textPosition: item.textPosition || 'bottom-left',
+        };
+      })
+    );
+
+    const cleanDraft: StudioGalleryState = {
+      layoutMode: draft.layoutMode || 'all',
+      titleLayout: draft.titleLayout || 'tile-corner',
+      textAnimation: draft.textAnimation || 'fadeUp',
+      kicker: draft.kicker ?? '',
+      headerTitle: draft.headerTitle ?? '',
+      headerDescription: draft.headerDescription ?? '',
+      items: sanitizedItems,
+    };
+
+    await onSaveAndApply(cleanDraft);
+    setDraft(cleanDraft);
+    setIsDirty(false);
+    if (showSavedToast) {
+      onShowToast?.('Studio Gallery saved!');
+    }
+    return cleanDraft;
+  };
+
+  useEffect(() => {
+    if (!commitRef) return;
+    commitRef.current = () => saveDraftAndReturn(false);
+    return () => {
+      commitRef.current = null;
+    };
+  });
+
   const handleCommitSave = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setIsSaving(true);
     try {
-      const sanitizedItems = await Promise.all(
-        draft.items.map(async (item, idx) => {
-          let mediaSrc = item.image || '';
-          const mediaType = inferMediaType(mediaSrc, item.mediaType);
-          if (mediaSrc.startsWith('data:')) {
-            const uploaded = await uploadMediaToSupabase(
-              mediaSrc,
-              item.mediaMetadata?.fileName || `studio_tile_${item.id || idx}`
-            );
-            if (uploaded.url) {
-              mediaSrc = uploaded.url;
-            } else if (mediaType === 'image') {
-              mediaSrc = await compressImageForCrossDevice(mediaSrc, 155000);
-            }
-          }
-          return {
-            id: item.id || `tile-${idx + 1}`,
-            title: item.title || '',
-            subtitle: item.subtitle || '',
-            image: mediaSrc,
-            mediaType,
-            ...(item.mediaMetadata ? { mediaMetadata: item.mediaMetadata } : {}),
-            size: item.size || '1x1',
-            textPosition: item.textPosition || 'bottom-left',
-          };
-        })
-      );
-
-      const cleanDraft: StudioGalleryState = {
-        layoutMode: draft.layoutMode || 'all',
-        titleLayout: draft.titleLayout || 'tile-corner',
-        textAnimation: draft.textAnimation || 'fadeUp',
-        kicker: draft.kicker ?? '',
-        headerTitle: draft.headerTitle ?? '',
-        headerDescription: draft.headerDescription ?? '',
-        items: sanitizedItems,
-      };
-
-      await onSaveAndApply(cleanDraft);
-      setDraft(cleanDraft);
-      setIsDirty(false);
-      onShowToast?.('Studio Gallery saved & synced across devices!');
+      await saveDraftAndReturn(true);
     } catch (err) {
       console.error('Failed to save Studio Gallery:', err);
       onShowToast?.('Error saving Studio Gallery. Please try again.');
     } finally {
       setIsSaving(false);
+    }
+  };
+
+  const handleSyncGallery = async () => {
+    if (isSyncing) return;
+    setIsSyncing(true);
+    try {
+      const committed = await saveDraftAndReturn(false);
+      if (onSyncAll) {
+        await onSyncAll(committed);
+      } else {
+        onShowToast?.('Synced across all connected devices & pages!');
+      }
+    } catch (err) {
+      console.error('Failed to sync Studio Gallery:', err);
+      onShowToast?.('Sync failed — please try again.');
+    } finally {
+      setIsSyncing(false);
     }
   };
 
@@ -262,7 +302,7 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
             Bento Grid, Video & Motion Controls
           </h2>
           <p className="text-xs text-white/60 mt-1">
-            Stage modes, upload photos or looping videos, and click Save & Apply to sync with Firestore.
+            Click Save to persist changes or Sync to push updates across all devices and pages.
           </p>
         </div>
 
@@ -285,15 +325,24 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
           </button>
           <button
             type="submit"
-            disabled={isSaving}
-            className={`px-6 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50 ${
+            disabled={isSaving || isSyncing}
+            className={`px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50 ${
               isDirty
                 ? 'bg-[#d8a39d] text-[#141414] hover:bg-[#f5efe6]'
                 : 'bg-[#f5efe6] text-[#141414] hover:bg-[#d8a39d]'
             }`}
           >
-            <Check size={14} />
-            {isSaving ? 'Saving...' : isDirty ? 'Save & Apply Changes' : 'Save & Apply'}
+            <Save size={14} />
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            type="button"
+            onClick={handleSyncGallery}
+            disabled={isSaving || isSyncing}
+            className="border border-white/30 bg-black text-white hover:bg-[#d8a39d] hover:text-[#141414] hover:border-[#d8a39d] px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+            {isSyncing ? 'Syncing...' : 'Sync'}
           </button>
         </div>
       </div>
@@ -638,12 +687,12 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
         </div>
       </div>
 
-      {/* Bottom Save Footer */}
+      {/* Bottom Save & Sync Footer */}
       <div className="pt-6 border-t border-white/10 flex flex-wrap items-center justify-between gap-4">
         <span className="text-[10px] font-bold uppercase tracking-[0.2em] text-white/50">
           {isDirty ? 'You have unsaved Studio Gallery edits' : 'All changes are saved and live'}
         </span>
-        <div className="flex items-center gap-3">
+        <div className="flex flex-wrap items-center gap-2.5">
           {isDirty && (
             <button
               type="button"
@@ -655,11 +704,20 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
           )}
           <button
             type="submit"
-            disabled={isSaving}
-            className="bg-[#f5efe6] text-[#141414] hover:bg-[#d8a39d] px-6 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50"
+            disabled={isSaving || isSyncing}
+            className="bg-[#f5efe6] text-[#141414] hover:bg-[#d8a39d] px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50"
           >
-            <Check size={14} />
-            {isSaving ? 'Saving...' : 'Save & Apply'}
+            <Save size={14} />
+            {isSaving ? 'Saving...' : 'Save'}
+          </button>
+          <button
+            type="button"
+            onClick={handleSyncGallery}
+            disabled={isSaving || isSyncing}
+            className="border border-white/30 bg-black text-white hover:bg-[#d8a39d] hover:text-[#141414] hover:border-[#d8a39d] px-5 py-2.5 text-[10px] font-black uppercase tracking-[0.2em] flex items-center gap-2 transition-colors rounded-none shadow-lg disabled:opacity-50"
+          >
+            <RefreshCw size={14} className={isSyncing ? 'animate-spin' : ''} />
+            {isSyncing ? 'Syncing...' : 'Sync'}
           </button>
         </div>
       </div>
