@@ -74,7 +74,7 @@ import { Storefront } from './components/store/Storefront';
 import { ShopLayout } from './components/shop/ShopLayout';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { AdminLoginModal } from './components/admin/AdminLoginModal';
-import { getSupabaseClient, updateSupabaseConfig } from './supabase';
+import { updateSupabaseConfig } from './supabase';
 import {
   syncProductToSupabase,
   deleteProductFromSupabase,
@@ -83,6 +83,7 @@ import {
   deleteCreatorPostFromSupabase,
   syncStudioGalleryToSupabase,
   fetchSupabaseData,
+  subscribeToSupabaseRealtime,
 } from './supabaseSync';
 
 const DEFAULT_SETTINGS: Settings = {
@@ -378,6 +379,70 @@ export default function App() {
 
     let unsubProductsFallback: (() => void) | undefined;
     let unsubCreatorsFallback: (() => void) | undefined;
+    let latestFirestoreSettingsTs = 0;
+    let latestSupabaseSettingsTs = 0;
+    let hasBackfilledSettings = false;
+    let hasBackfilledProducts = false;
+    let hasBackfilledCreators = false;
+    const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+
+    const applySupabaseSettings = (incoming: Settings) => {
+      const incomingTs = Number(incoming.settingsUpdatedAt) || 0;
+      if (incomingTs > 0 && latestFirestoreSettingsTs > incomingTs + 500) {
+        return;
+      }
+      if (incomingTs > latestSupabaseSettingsTs) {
+        latestSupabaseSettingsTs = incomingTs;
+      }
+
+      const cleanedHeroUrls = Array.isArray(incoming.heroVideoUrls)
+        ? normalizeHeroMediaList(incoming.heroVideoUrls)
+        : [];
+      const cleanedSingleHero = incoming.heroVideoUrl
+        ? normalizeMediaUrlInput(incoming.heroVideoUrl)
+        : '';
+
+      const finalHeroUrls =
+        cleanedHeroUrls.length > 0
+          ? cleanedHeroUrls
+          : cleanedSingleHero
+          ? [cleanedSingleHero]
+          : undefined;
+      const finalHeroUrl = finalHeroUrls?.[0] || cleanedSingleHero || undefined;
+
+      if (finalHeroUrls && finalHeroUrls.length > 0) {
+        const isDefaultOnly = finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
+        writeCachedHeroPlaylist(finalHeroUrls, finalHeroUrl, isDefaultOnly);
+      }
+
+      setSettings((prev) => ({
+        ...prev,
+        ...incoming,
+        ...(finalHeroUrls ? { heroVideoUrls: finalHeroUrls } : {}),
+        ...(finalHeroUrl !== undefined ? { heroVideoUrl: finalHeroUrl } : {}),
+        whatsappNumber:
+          incoming.whatsappNumber !== undefined
+            ? incoming.whatsappNumber
+            : prev.whatsappNumber || '',
+      }));
+
+      if (incoming.supabaseUrl || incoming.supabaseAnonKey || incoming.supabaseBucket) {
+        updateSupabaseConfig({
+          url: incoming.supabaseUrl,
+          anonKey: incoming.supabaseAnonKey,
+          bucket: incoming.supabaseBucket,
+        });
+      }
+      try {
+        if (incoming.whatsappNumber !== undefined) {
+          if (incoming.whatsappNumber) {
+            localStorage.setItem('brotherhood_whatsapp_number', incoming.whatsappNumber);
+          } else {
+            localStorage.removeItem('brotherhood_whatsapp_number');
+          }
+        }
+      } catch {}
+    };
 
     // Listen to Settings
     const unsubSettings = onSnapshot(
@@ -385,7 +450,14 @@ export default function App() {
       (snap) => {
         if (snap.exists()) {
           const data = snap.data() as any;
-          console.log('[Firestore Settings] Received settings snapshot:', data);
+          const firestoreTs = Number(data.settingsUpdatedAt) || 0;
+          if (firestoreTs > 0 && latestSupabaseSettingsTs > firestoreTs + 500) {
+            return;
+          }
+          if (firestoreTs > latestFirestoreSettingsTs) {
+            latestFirestoreSettingsTs = firestoreTs;
+          }
+
           const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
           const cleanedHeroUrls = normalizeHeroMediaList(
             heroUrls.filter(
@@ -406,7 +478,6 @@ export default function App() {
           const validSingleHeroUrl = rawSingleHero;
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
-          const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
           if (cleanedHeroUrls.length === 0 && !validSingleHeroUrl) {
             const cachedHero = readCachedHeroPlaylist();
             if (
@@ -471,15 +542,10 @@ export default function App() {
               localStorage.removeItem('brotherhood_whatsapp_number');
             }
           } catch {}
-          syncSettingsToSupabase(merged).catch(() => {});
-          if (merged.studioGallery) {
-            syncStudioGalleryToSupabase(merged.studioGallery).catch(() => {});
-          }
         } else {
           setDoc(doc(db, 'settings', 'global'), DEFAULT_SETTINGS).catch((error) =>
             handleFirestoreError(error, OperationType.WRITE, 'settings/global')
           );
-          syncSettingsToSupabase(DEFAULT_SETTINGS).catch(() => {});
         }
       },
       (error) => {
@@ -510,9 +576,6 @@ export default function App() {
           });
         } else {
           setProducts(loaded);
-          loaded.forEach((p) => {
-            if (p.id) syncProductToSupabase(p).catch(() => {});
-          });
         }
         setLoading(false);
       },
@@ -555,9 +618,6 @@ export default function App() {
           });
         } else {
           setCreatorPosts(loaded);
-          loaded.forEach((cp) => {
-            if (cp.id) syncCreatorPostToSupabase(cp).catch(() => {});
-          });
         }
       },
       (err) => {
@@ -575,56 +635,62 @@ export default function App() {
       }
     );
 
-    // Secondary Supabase hydration & realtime reconciliation across clients
+    // Initial Supabase hydration + one-time backfill if a Supabase table is completely empty
     const hydrateFromSupabase = async () => {
       const supa = await fetchSupabaseData();
       if (supa.products && supa.products.length > 0) {
         setProducts((prev) => (prev.length === 0 ? supa.products! : prev));
+        setLoading(false);
+      } else if (supa.products && supa.products.length === 0 && !hasBackfilledProducts) {
+        hasBackfilledProducts = true;
+        setProducts((current) => {
+          current.forEach((p) => {
+            if (p.id) syncProductToSupabase(p).catch(() => {});
+          });
+          return current;
+        });
       }
+
       if (supa.creatorPosts && supa.creatorPosts.length > 0) {
         setCreatorPosts((prev) => (prev.length === 0 ? supa.creatorPosts! : prev));
+      } else if (supa.creatorPosts && supa.creatorPosts.length === 0 && !hasBackfilledCreators) {
+        hasBackfilledCreators = true;
+        setCreatorPosts((current) => {
+          current.forEach((cp) => {
+            if (cp.id) syncCreatorPostToSupabase(cp).catch(() => {});
+          });
+          return current;
+        });
       }
+
       if (supa.settings) {
-        setSettings((prev) => ({
-          ...prev,
-          ...(supa.settings?.whatsappNumber && !prev.whatsappNumber
-            ? { whatsappNumber: supa.settings.whatsappNumber }
-            : {}),
-        }));
+        applySupabaseSettings(supa.settings);
+      } else if (!hasBackfilledSettings) {
+        hasBackfilledSettings = true;
+        setSettings((current) => {
+          syncSettingsToSupabase(current).catch(() => {});
+          return current;
+        });
       }
     };
-    hydrateFromSupabase();
+    void hydrateFromSupabase();
 
-    const supaChannel = getSupabaseClient()
-      .channel('brotherhood-storefront-sync')
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'products' }, () => {
-        fetchSupabaseData().then((supa) => {
-          if (supa.products && supa.products.length > 0) {
-            setProducts(supa.products);
-          }
-        });
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'creators_club' }, () => {
-        fetchSupabaseData().then((supa) => {
-          if (supa.creatorPosts && supa.creatorPosts.length > 0) {
-            setCreatorPosts(supa.creatorPosts);
-          }
-        });
-      })
-      .on('postgres_changes', { event: '*', schema: 'public', table: 'settings' }, (payload) => {
-        console.log('[Supabase Realtime] Settings table changed:', payload);
-        fetchSupabaseData().then((supa) => {
-          if (supa.settings) {
-            console.log('[Supabase Realtime] Fetched updated Supabase settings:', supa.settings);
-            setSettings((prev) => ({
-              ...prev,
-              ...supa.settings,
-              whatsappNumber: supa.settings?.whatsappNumber || prev.whatsappNumber || '',
-            }));
-          }
-        });
-      })
-      .subscribe();
+    // Real-time Supabase synchronization across all connected devices (Broadcast + postgres_changes)
+    const unsubSupabaseRealtime = subscribeToSupabaseRealtime({
+      onSettings: (supaSettings) => {
+        applySupabaseSettings(supaSettings);
+      },
+      onProducts: (supaProducts) => {
+        setProducts(supaProducts);
+        setLoading(false);
+      },
+      onCreators: (supaCreators) => {
+        setCreatorPosts(supaCreators);
+      },
+      onReconnected: () => {
+        void hydrateFromSupabase();
+      },
+    });
 
     return () => {
       window.removeEventListener('hashchange', handleHash);
@@ -633,7 +699,7 @@ export default function App() {
       if (unsubProductsFallback) unsubProductsFallback();
       unsubCreators();
       if (unsubCreatorsFallback) unsubCreatorsFallback();
-      getSupabaseClient().removeChannel(supaChannel);
+      unsubSupabaseRealtime();
     };
   }, []);
 
@@ -698,32 +764,42 @@ export default function App() {
     try {
       let savedId = id;
       if (id) {
-        await updateDoc(doc(db, 'products', id), data as any);
+        const [firestoreRes] = await Promise.allSettled([
+          updateDoc(doc(db, 'products', id), data as any),
+          syncProductToSupabase({ ...cleanProduct, id }),
+        ]);
+        if (firestoreRes.status === 'rejected') {
+          throw firestoreRes.reason;
+        }
       } else {
         const docRef = await addDoc(collection(db, 'products'), {
           ...data,
           createdAt: serverTimestamp(),
         });
         savedId = docRef.id;
+        await syncProductToSupabase({ ...cleanProduct, id: savedId });
       }
-      await syncProductToSupabase({ ...cleanProduct, id: savedId });
     } catch (error) {
       handleFirestoreError(error, id ? OperationType.UPDATE : OperationType.CREATE, id ? `products/${id}` : 'products');
     }
   };
 
   const handleDeleteProduct = async (productId: string) => {
-    try {
-      await deleteDoc(doc(db, 'products', productId));
-      await deleteProductFromSupabase(productId);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `products/${productId}`);
+    const [firestoreRes] = await Promise.allSettled([
+      deleteDoc(doc(db, 'products', productId)),
+      deleteProductFromSupabase(productId),
+    ]);
+    if (firestoreRes.status === 'rejected') {
+      handleFirestoreError(firestoreRes.reason, OperationType.DELETE, `products/${productId}`);
     }
   };
 
   const handleSaveSettings = async (newSettings: Settings) => {
     const { studioGallery: nextGallery, ...settingsWithoutGallery } = stripUndefined(newSettings);
-    const cleanSettings = settingsWithoutGallery as Settings;
+    const cleanSettings = {
+      ...(settingsWithoutGallery as Settings),
+      settingsUpdatedAt: Date.now(),
+    };
 
     const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
     const nextHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
@@ -764,29 +840,36 @@ export default function App() {
         }
       }
     } catch {}
-    try {
-      // Remove redundant ~725KB studioGallery copy from settings/global (studio_gallery/config is its own doc)
-      await setDoc(
+
+    const syncTasks: Promise<unknown>[] = [
+      setDoc(
         doc(db, 'settings', 'global'),
         {
           ...cleanSettings,
           studioGallery: deleteField(),
         } as any,
         { merge: true }
-      );
-      await syncSettingsToSupabase(cleanSettings);
-      if (nextGallery) {
-        await syncStudioGalleryToSupabase(nextGallery);
-      }
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
+      ),
+      syncSettingsToSupabase(cleanSettings),
+    ];
+    if (nextGallery) {
+      syncTasks.push(syncStudioGalleryToSupabase(nextGallery));
+    }
+    const [firestoreRes] = await Promise.allSettled(syncTasks);
+    if (firestoreRes.status === 'rejected') {
+      handleFirestoreError(firestoreRes.reason, OperationType.UPDATE, 'settings/global');
     }
   };
 
   const handleSaveWhatsappNumber = async (rawNumber: string) => {
     const cleanNumber = rawNumber.trim();
-    const updatedSettings: Settings = { ...settings, whatsappNumber: cleanNumber };
-    setSettings((prev) => ({ ...prev, whatsappNumber: cleanNumber }));
+    const updatedAt = Date.now();
+    const updatedSettings: Settings = {
+      ...settings,
+      whatsappNumber: cleanNumber,
+      settingsUpdatedAt: updatedAt,
+    };
+    setSettings((prev) => ({ ...prev, whatsappNumber: cleanNumber, settingsUpdatedAt: updatedAt }));
     try {
       if (cleanNumber) {
         localStorage.setItem('brotherhood_whatsapp_number', cleanNumber);
@@ -794,11 +877,16 @@ export default function App() {
         localStorage.removeItem('brotherhood_whatsapp_number');
       }
     } catch {}
-    try {
-      await setDoc(doc(db, 'settings', 'global'), { whatsappNumber: cleanNumber }, { merge: true });
-      await syncSettingsToSupabase(updatedSettings);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
+    const [firestoreRes] = await Promise.allSettled([
+      setDoc(
+        doc(db, 'settings', 'global'),
+        { whatsappNumber: cleanNumber, settingsUpdatedAt: updatedAt },
+        { merge: true }
+      ),
+      syncSettingsToSupabase(updatedSettings),
+    ]);
+    if (firestoreRes.status === 'rejected') {
+      handleFirestoreError(firestoreRes.reason, OperationType.UPDATE, 'settings/global');
     }
   };
 
@@ -812,17 +900,20 @@ export default function App() {
       anonKey: keys.supabaseAnonKey,
       bucket: keys.supabaseBucket,
     });
+    const updatedAt = Date.now();
     const normalizedPayload = {
       supabaseUrl: updatedCfg.url,
       supabaseAnonKey: updatedCfg.anonKey,
       supabaseBucket: updatedCfg.bucket,
+      settingsUpdatedAt: updatedAt,
     };
     setSettings((prev) => ({ ...prev, ...normalizedPayload }));
-    try {
-      await setDoc(doc(db, 'settings', 'global'), normalizedPayload, { merge: true });
-      await syncSettingsToSupabase({ ...settings, ...normalizedPayload });
-    } catch (error) {
-      handleFirestoreError(error, OperationType.UPDATE, 'settings/global');
+    const [firestoreRes] = await Promise.allSettled([
+      setDoc(doc(db, 'settings', 'global'), normalizedPayload, { merge: true }),
+      syncSettingsToSupabase({ ...settings, ...normalizedPayload }),
+    ]);
+    if (firestoreRes.status === 'rejected') {
+      handleFirestoreError(firestoreRes.reason, OperationType.UPDATE, 'settings/global');
     }
   };
 
@@ -848,18 +939,27 @@ export default function App() {
     try {
       let savedId = id;
       if (id) {
-        await updateDoc(doc(db, 'creators_club', id), cleanPayload);
+        const [firestoreRes] = await Promise.allSettled([
+          updateDoc(doc(db, 'creators_club', id), cleanPayload),
+          syncCreatorPostToSupabase({
+            ...(cleanPayload as unknown as CreatorPost),
+            id,
+          }),
+        ]);
+        if (firestoreRes.status === 'rejected') {
+          throw firestoreRes.reason;
+        }
       } else {
         const docRef = await addDoc(collection(db, 'creators_club'), {
           ...cleanPayload,
           createdAt: serverTimestamp(),
         });
         savedId = docRef.id;
+        await syncCreatorPostToSupabase({
+          ...(cleanPayload as unknown as CreatorPost),
+          id: savedId,
+        });
       }
-      await syncCreatorPostToSupabase({
-        ...(cleanPayload as unknown as CreatorPost),
-        id: savedId,
-      });
     } catch (error) {
       handleFirestoreError(
         error,
@@ -870,11 +970,12 @@ export default function App() {
   };
 
   const handleDeleteCreatorPost = async (postId: string) => {
-    try {
-      await deleteDoc(doc(db, 'creators_club', postId));
-      await deleteCreatorPostFromSupabase(postId);
-    } catch (error) {
-      handleFirestoreError(error, OperationType.DELETE, `creators_club/${postId}`);
+    const [firestoreRes] = await Promise.allSettled([
+      deleteDoc(doc(db, 'creators_club', postId)),
+      deleteCreatorPostFromSupabase(postId),
+    ]);
+    if (firestoreRes.status === 'rejected') {
+      handleFirestoreError(firestoreRes.reason, OperationType.DELETE, `creators_club/${postId}`);
     }
   };
 

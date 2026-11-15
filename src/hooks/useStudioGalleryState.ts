@@ -2,7 +2,11 @@ import { useState, useEffect, useCallback, useRef } from 'react';
 import { doc, onSnapshot, setDoc, serverTimestamp } from 'firebase/firestore';
 import { db, auth } from '../firebase';
 import { StudioGalleryItem, StudioGalleryState } from '../types';
-import { syncStudioGalleryToSupabase } from '../supabaseSync';
+import {
+  syncStudioGalleryToSupabase,
+  fetchSupabaseStudioGallery,
+  subscribeStudioGalleryRealtime,
+} from '../supabaseSync';
 
 export const STUDIO_GALLERY_COLLECTION = 'studio_gallery';
 export const STUDIO_GALLERY_DOC_ID = 'config';
@@ -174,21 +178,26 @@ export function useStudioGalleryState(
     return local || DEFAULT_STUDIO_GALLERY_STATE;
   });
 
-  // Real-time Firestore synchronization from studio_gallery/config across all clients
+  // Real-time Firestore + Supabase synchronization from studio_gallery/config across all clients
   useEffect(() => {
+    let active = true;
     const galleryDocRef = doc(db, STUDIO_GALLERY_COLLECTION, STUDIO_GALLERY_DOC_ID);
-    const unsubscribe = onSnapshot(
+    const applyNormalized = (data: Partial<StudioGalleryState>) => {
+      if (!active) return;
+      const normalized = serializeStudioGallery(data);
+      setGalleryState(normalized);
+      try {
+        window.localStorage.setItem(storageKey, JSON.stringify(normalized));
+      } catch {
+        // Ignore storage quota errors
+      }
+    };
+
+    const unsubscribeFirestore = onSnapshot(
       galleryDocRef,
       (snap) => {
         if (snap.exists()) {
-          const data = snap.data() as Partial<StudioGalleryState>;
-          const normalized = serializeStudioGallery(data);
-          setGalleryState(normalized);
-          try {
-            window.localStorage.setItem(storageKey, JSON.stringify(normalized));
-          } catch {
-            // Ignore storage quota errors
-          }
+          applyNormalized(snap.data() as Partial<StudioGalleryState>);
         }
       },
       (error) => {
@@ -196,7 +205,21 @@ export function useStudioGalleryState(
       }
     );
 
-    return () => unsubscribe();
+    const unsubscribeSupabase = subscribeStudioGalleryRealtime((incoming) => {
+      applyNormalized(incoming);
+    });
+
+    fetchSupabaseStudioGallery().then((supaGallery) => {
+      if (supaGallery && Array.isArray(supaGallery.items)) {
+        applyNormalized(supaGallery);
+      }
+    });
+
+    return () => {
+      active = false;
+      unsubscribeFirestore();
+      unsubscribeSupabase();
+    };
   }, [storageKey]);
 
   // Fallback sync if legacy settings.studioGallery updates before studio_gallery/config is created
@@ -223,24 +246,21 @@ export function useStudioGalleryState(
       }
 
       const galleryDocRef = doc(db, STUDIO_GALLERY_COLLECTION, STUDIO_GALLERY_DOC_ID);
-      try {
-        await setDoc(
+      const [firestoreRes] = await Promise.allSettled([
+        setDoc(
           galleryDocRef,
           {
             ...serialized,
             updatedAt: serverTimestamp(),
           },
           { merge: true }
-        );
-      } catch (error) {
-        reportGalleryFirestoreError(
-          error,
-          'write',
-          `${STUDIO_GALLERY_COLLECTION}/${STUDIO_GALLERY_DOC_ID}`
-        );
-      }
+        ),
+        syncStudioGalleryToSupabase(serialized),
+      ]);
 
-      await syncStudioGalleryToSupabase(serialized);
+      if (firestoreRes.status === 'rejected') {
+        console.warn('Studio Gallery Firestore save warning:', firestoreRes.reason);
+      }
 
       if (cloudCallbackRef.current) {
         await cloudCallbackRef.current(serialized);

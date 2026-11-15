@@ -128,6 +128,7 @@ export interface Settings {
   supabaseUrl?: string;
   supabaseAnonKey?: string;
   supabaseBucket?: string;
+  settingsUpdatedAt?: number;
 }
 
 export interface CartItem extends Product {

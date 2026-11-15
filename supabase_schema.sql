@@ -87,3 +87,38 @@ create policy "Public upload media" on storage.objects for insert with check (bu
 
 drop policy if exists "Public update media" on storage.objects;
 create policy "Public update media" on storage.objects for update using (bucket_id = 'media');
+
+-- Enable real-time postgres_changes replication across all connected storefront devices
+alter table public.products replica identity full;
+alter table public.settings replica identity full;
+alter table public.creators_club replica identity full;
+alter table public.studio_gallery replica identity full;
+
+do $$
+begin
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'products'
+  ) then
+    alter publication supabase_realtime add table public.products;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'settings'
+  ) then
+    alter publication supabase_realtime add table public.settings;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'creators_club'
+  ) then
+    alter publication supabase_realtime add table public.creators_club;
+  end if;
+  if not exists (
+    select 1 from pg_publication_tables
+    where pubname = 'supabase_realtime' and schemaname = 'public' and tablename = 'studio_gallery'
+  ) then
+    alter publication supabase_realtime add table public.studio_gallery;
+  end if;
+end $$;
+

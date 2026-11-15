@@ -1832,7 +1832,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onClick={() => {
                                 const next = [...arr];
                                 [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                                void applyAndSyncHeroSettings(
+                                  { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                  'Hero playlist order synced across devices'
+                                );
                               }}
                               className="p-2 text-zinc-500 hover:text-black disabled:opacity-30"
                               aria-label="Move up"
@@ -1845,7 +1848,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               onClick={() => {
                                 const next = [...arr];
                                 [next[i + 1], next[i]] = [next[i], next[i + 1]];
-                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                                void applyAndSyncHeroSettings(
+                                  { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                  'Hero playlist order synced across devices'
+                                );
                               }}
                               className="p-2 text-zinc-500 hover:text-black disabled:opacity-30"
                               aria-label="Move down"
@@ -1856,7 +1862,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               type="button"
                               onClick={() => {
                                 const next = arr.filter((_, idx) => idx !== i);
-                                setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                                void applyAndSyncHeroSettings(
+                                  { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                  'Hero media item removed & synced across devices'
+                                );
                               }}
                               className="text-zinc-400 hover:text-rose-600 p-2"
                               title="Remove media"
@@ -1935,7 +1944,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onClick={() => {
                               const next = [...arr];
                               [next[i - 1], next[i]] = [next[i], next[i - 1]];
-                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              void applyAndSyncHeroSettings(
+                                { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                'Hero playlist order synced across devices'
+                              );
                             }}
                             className="hidden sm:inline-flex p-2 text-zinc-400 hover:text-black disabled:opacity-30"
                             title="Move earlier"
@@ -1949,7 +1961,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             onClick={() => {
                               const next = [...arr];
                               [next[i + 1], next[i]] = [next[i], next[i + 1]];
-                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              void applyAndSyncHeroSettings(
+                                { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                'Hero playlist order synced across devices'
+                              );
                             }}
                             className="hidden sm:inline-flex p-2 text-zinc-400 hover:text-black disabled:opacity-30"
                             title="Move later"
@@ -1961,7 +1976,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             type="button"
                             onClick={() => {
                               const next = arr.filter((_, idx) => idx !== i);
-                              setFormSettings({ ...formSettings, heroVideoUrls: next, heroVideoUrl: next[0] || '' });
+                              void applyAndSyncHeroSettings(
+                                { heroVideoUrls: next, heroVideoUrl: next[0] || '' },
+                                'Hero media item removed & synced across devices'
+                              );
                             }}
                             className="hidden sm:inline-flex text-zinc-400 hover:text-rose-600 p-2"
                             title="Remove media"
@@ -1984,7 +2002,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <div className="grid grid-cols-2 gap-1.5 bg-zinc-100 p-1">
                     <button
                       type="button"
-                      onClick={() => setFormSettings({ ...formSettings, heroMediaFit: 'contain' })}
+                      onClick={() =>
+                        void applyAndSyncHeroSettings(
+                          { heroMediaFit: 'contain' },
+                          'Hero frame fit synced across devices'
+                        )
+                      }
                       className={`py-2 px-3 text-[10px] font-black uppercase tracking-widest transition-colors whitespace-nowrap ${
                         formSettings.heroMediaFit === 'contain'
                           ? 'bg-black text-white'
@@ -1995,7 +2018,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     </button>
                     <button
                       type="button"
-                      onClick={() => setFormSettings({ ...formSettings, heroMediaFit: 'cover' })}
+                      onClick={() =>
+                        void applyAndSyncHeroSettings(
+                          { heroMediaFit: 'cover' },
+                          'Hero frame fit synced across devices'
+                        )
+                      }
                       className={`py-2 px-3 text-[10px] font-black uppercase tracking-widest transition-colors whitespace-nowrap ${
                         (formSettings.heroMediaFit || 'cover') === 'cover'
                           ? 'bg-black text-white'
@@ -2021,7 +2049,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         onClick={() => {
                           const current = Number(formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1);
                           const next = Math.max(0.5, Math.round((current - 0.1) * 100) / 100);
-                          setFormSettings({ ...formSettings, heroVideoZoom: next, heroImageZoom: next });
+                          void applyAndSyncHeroSettings(
+                            { heroVideoZoom: next, heroImageZoom: next },
+                            'Hero zoom synced across devices'
+                          );
                         }}
                         className="border border-zinc-200 hover:border-black px-2 py-0.5 text-xs font-mono font-bold"
                         title="Zoom Out"
@@ -2031,7 +2062,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <button
                         type="button"
                         onClick={() =>
-                          setFormSettings({ ...formSettings, heroVideoZoom: 1, heroImageZoom: 1 })
+                          void applyAndSyncHeroSettings(
+                            { heroVideoZoom: 1, heroImageZoom: 1 },
+                            'Hero zoom reset & synced across devices'
+                          )
                         }
                         className="border border-zinc-200 hover:border-black px-2 py-0.5 text-[10px] font-mono font-bold flex items-center gap-1"
                         title="Reset to 1.00x"
@@ -2043,7 +2077,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         onClick={() => {
                           const current = Number(formSettings.heroVideoZoom ?? formSettings.heroImageZoom ?? 1);
                           const next = Math.min(2.5, Math.round((current + 0.1) * 100) / 100);
-                          setFormSettings({ ...formSettings, heroVideoZoom: next, heroImageZoom: next });
+                          void applyAndSyncHeroSettings(
+                            { heroVideoZoom: next, heroImageZoom: next },
+                            'Hero zoom synced across devices'
+                          );
                         }}
                         className="border border-zinc-200 hover:border-black px-2 py-0.5 text-xs font-mono font-bold"
                         title="Zoom In"
@@ -2062,6 +2099,24 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       const z = Number(e.target.value);
                       setFormSettings({ ...formSettings, heroVideoZoom: z, heroImageZoom: z });
                     }}
+                    onMouseUp={() =>
+                      void applyAndSyncHeroSettings(
+                        {
+                          heroVideoZoom: formSettingsRef.current.heroVideoZoom,
+                          heroImageZoom: formSettingsRef.current.heroImageZoom,
+                        },
+                        'Hero zoom synced across devices'
+                      )
+                    }
+                    onTouchEnd={() =>
+                      void applyAndSyncHeroSettings(
+                        {
+                          heroVideoZoom: formSettingsRef.current.heroVideoZoom,
+                          heroImageZoom: formSettingsRef.current.heroImageZoom,
+                        },
+                        'Hero zoom synced across devices'
+                      )
+                    }
                     className="w-full accent-black cursor-pointer"
                   />
                   <div className="flex justify-between text-[9px] font-mono text-zinc-400 mt-1 tabular-nums">
@@ -2078,11 +2133,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                   <select
                     value={formSettings.heroVideoPosition || formSettings.heroImagePosition || '50% 50%'}
                     onChange={(e) =>
-                      setFormSettings({
-                        ...formSettings,
-                        heroVideoPosition: e.target.value,
-                        heroImagePosition: e.target.value,
-                      })
+                      void applyAndSyncHeroSettings(
+                        {
+                          heroVideoPosition: e.target.value,
+                          heroImagePosition: e.target.value,
+                        },
+                        'Hero alignment synced across devices'
+                      )
                     }
                     className="w-full border border-zinc-200 p-2 text-xs uppercase font-bold bg-white"
                   >

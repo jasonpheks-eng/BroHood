@@ -59,6 +59,16 @@ export let supabase: SupabaseClient = createClient(SUPABASE_URL, SUPABASE_ANON_K
   },
 });
 
+type SupabaseConfigListener = (cfg: SupabaseRuntimeConfig) => void;
+const configListeners = new Set<SupabaseConfigListener>();
+
+export function onSupabaseConfigChange(listener: SupabaseConfigListener): () => void {
+  configListeners.add(listener);
+  return () => {
+    configListeners.delete(listener);
+  };
+}
+
 export function getSupabaseConfig(): SupabaseRuntimeConfig {
   return {
     url: SUPABASE_URL,
@@ -82,6 +92,7 @@ export function updateSupabaseConfig(next: {
   const nextBucket = (next.bucket ?? '').trim() || DEFAULT_SUPABASE_BUCKET;
 
   const credentialsChanged = nextUrl !== SUPABASE_URL || nextKey !== SUPABASE_ANON_KEY;
+  const anyChanged = credentialsChanged || nextBucket !== SUPABASE_STORAGE_BUCKET;
 
   SUPABASE_URL = nextUrl;
   SUPABASE_ANON_KEY = nextKey;
@@ -108,7 +119,18 @@ export function updateSupabaseConfig(next: {
     });
   }
 
-  return getSupabaseConfig();
+  const cfg = getSupabaseConfig();
+  if (anyChanged) {
+    configListeners.forEach((listener) => {
+      try {
+        listener(cfg);
+      } catch {
+        // Ignore listener errors
+      }
+    });
+  }
+
+  return cfg;
 }
 
 export function sanitizePastedCredential(raw: string): string {
