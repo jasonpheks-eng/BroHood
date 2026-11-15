@@ -866,7 +866,7 @@ export async function uploadMediaToSupabase(
         };
       }
 
-      if (blob.size <= 650 * 1024) {
+      if (blob.size <= 150 * 1024) {
         try {
           const dataUrl = await new Promise<string>((resolve, reject) => {
             const reader = new FileReader();
@@ -874,7 +874,7 @@ export async function uploadMediaToSupabase(
             reader.onerror = () => reject(reader.error);
             reader.readAsDataURL(blob);
           });
-          if (dataUrl && dataUrl.length <= 900_000) {
+          if (dataUrl && dataUrl.length <= 220_000) {
             options?.onProgress?.(100);
             return {
               url: dataUrl,

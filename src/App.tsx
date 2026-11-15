@@ -330,22 +330,24 @@ export default function App() {
         if (snap.exists()) {
           const data = snap.data() as any;
           console.log('[Firestore Settings] Received settings snapshot:', data);
-          const heroUrls = data.heroVideoUrls;
-          const hasOldOrBrokenHeroVideo =
-            !Array.isArray(heroUrls) ||
-            heroUrls.length === 0 ||
-            heroUrls.some(
-              (u: string) =>
-                !u ||
-                u.includes('Scene-1') ||
-                u.includes('Scene-7')
-            ) ||
-            !data.heroVideoUrl ||
-            data.heroVideoUrl.includes('Scene-1') ||
-            data.heroVideoUrl.includes('Scene-7');
+          const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
+          const cleanedHeroUrls = heroUrls.filter(
+            (u: unknown): u is string =>
+              typeof u === 'string' &&
+              u.trim().length > 0 &&
+              !u.includes('Scene-1') &&
+              !u.includes('Scene-7')
+          );
+          const validSingleHeroUrl =
+            typeof data.heroVideoUrl === 'string' &&
+            data.heroVideoUrl.trim().length > 0 &&
+            !data.heroVideoUrl.includes('Scene-1') &&
+            !data.heroVideoUrl.includes('Scene-7')
+              ? data.heroVideoUrl.trim()
+              : '';
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
-          if (hasOldOrBrokenHeroVideo) {
+          if (cleanedHeroUrls.length === 0 && !validSingleHeroUrl) {
             const patch: Record<string, unknown> = {
               heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
               heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
@@ -353,6 +355,12 @@ export default function App() {
             merged.heroVideoUrl = '/assets/aistudio/brotherhood_hero_loop.mp4';
             merged.heroVideoUrls = ['/assets/aistudio/brotherhood_hero_loop.mp4'];
             setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
+          } else if (cleanedHeroUrls.length > 0) {
+            merged.heroVideoUrls = cleanedHeroUrls;
+            merged.heroVideoUrl = validSingleHeroUrl || cleanedHeroUrls[0];
+          } else if (validSingleHeroUrl) {
+            merged.heroVideoUrls = [validSingleHeroUrl];
+            merged.heroVideoUrl = validSingleHeroUrl;
           }
           setSettings(merged);
           if (merged.supabaseUrl || merged.supabaseAnonKey || merged.supabaseBucket) {
@@ -643,7 +651,19 @@ export default function App() {
       }
     } catch {}
     try {
-      await setDoc(doc(db, 'settings', 'global'), cleanSettings as any, { merge: true });
+      try {
+        await setDoc(doc(db, 'settings', 'global'), cleanSettings as any, { merge: true });
+      } catch (writeErr) {
+        const msg = writeErr instanceof Error ? writeErr.message : String(writeErr);
+        // If inline studioGallery/image data URLs pushed settings/global past Firestore's 1MB limit,
+        // retry without inline studioGallery payload so hero settings still persist reliably.
+        if (msg.includes('exceeds') || msg.includes('maximum allowed size') || msg.includes('invalid-argument')) {
+          const { studioGallery: _omitGallery, ...compactSettings } = cleanSettings as Settings;
+          await setDoc(doc(db, 'settings', 'global'), compactSettings as any, { merge: true });
+        } else {
+          throw writeErr;
+        }
+      }
       await syncSettingsToSupabase(cleanSettings as Settings);
       if ((cleanSettings as Settings).studioGallery) {
         await syncStudioGalleryToSupabase((cleanSettings as Settings).studioGallery!);

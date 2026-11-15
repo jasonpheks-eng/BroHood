@@ -1,6 +1,6 @@
-import React, { useState, useRef, useEffect } from 'react';
+import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from '../../types';
-import { ResolvedImage, useResolvedMedia } from './ResolvedMedia';
+import { ResolvedImage, useResolvedMediaState } from './ResolvedMedia';
 import { cn } from '../../utils';
 
 interface HeaderVideoBannerProps {
@@ -13,6 +13,7 @@ const isImageSource = (url?: string): boolean => {
   if (!url) return false;
   const lower = url.toLowerCase();
   if (lower.startsWith('data:image/')) return true;
+  if (lower.startsWith('idb://img_')) return true;
   if (lower.match(/\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/)) return true;
   return false;
 };
@@ -20,7 +21,8 @@ const isImageSource = (url?: string): boolean => {
 export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }) => {
   const [heroVideoIndex, setHeroVideoIndex] = useState(0);
   const [isVideoPlaying, setIsVideoPlaying] = useState(false);
-  const heroVideoRef = useRef<HTMLVideoElement>(null);
+  const [autoplayBlocked, setAutoplayBlocked] = useState(false);
+  const heroVideoRef = useRef<HTMLVideoElement | null>(null);
 
   // Unified Hero Media playlist (supports mixed videos + photos auto-cycling together)
   const heroMediaList = React.useMemo(() => {
@@ -35,31 +37,37 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       : settings.heroImageUrl
       ? [settings.heroImageUrl]
       : [DEFAULT_HERO_VIDEO_URL];
-    console.log('[HeroBanner] Computed heroMediaList:', resolved, 'rawSettingsUrls:', settings.heroVideoUrls);
     return resolved;
   }, [settings.heroVideoUrls, settings.heroVideoUrl, settings.heroImageUrl]);
 
+  const playlistSignature = heroMediaList.join('|');
+  const prevFirstItemRef = useRef<string>(heroMediaList[0] || '');
   useEffect(() => {
-    if (heroVideoIndex >= heroMediaList.length) {
-      console.log('[HeroBanner] Index reset from', heroVideoIndex, 'to 0 because list length is', heroMediaList.length);
+    const currentFirst = heroMediaList[0] || '';
+    if (prevFirstItemRef.current !== currentFirst || heroVideoIndex >= heroMediaList.length) {
+      prevFirstItemRef.current = currentFirst;
       setHeroVideoIndex(0);
     }
-  }, [heroVideoIndex, heroMediaList.length]);
+  }, [playlistSignature, heroVideoIndex, heroMediaList]);
 
   const rawMediaSrc = heroMediaList[heroVideoIndex] || heroMediaList[0] || DEFAULT_HERO_VIDEO_URL;
-  const activeMediaSrc = useResolvedMedia(rawMediaSrc);
-  const srcToPlay =
-    activeMediaSrc || (rawMediaSrc.startsWith('idb://') ? DEFAULT_HERO_VIDEO_URL : rawMediaSrc);
-  const isCurrentItemImage = isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc);
-  const isBrotherhoodHero = srcToPlay.includes('brotherhood_hero_loop');
+  const { resolvedSrc: activeMediaSrc, isResolving } = useResolvedMediaState(rawMediaSrc);
+  const isUnresolvedIdb = rawMediaSrc.startsWith('idb://') && !isResolving && !activeMediaSrc;
+  const srcToPlay = rawMediaSrc.startsWith('idb://')
+    ? activeMediaSrc || (isUnresolvedIdb ? DEFAULT_HERO_VIDEO_URL : '')
+    : activeMediaSrc || rawMediaSrc;
 
-  const prevSrcRef = useRef<string>('');
+  // If a playlist item is an idb:// key belonging to another device, skip to the next item if available
   useEffect(() => {
-    if (prevSrcRef.current !== srcToPlay) {
-      console.log('[HeroBanner] Transitioning source: old =', prevSrcRef.current, 'new =', srcToPlay, 'isImage =', isCurrentItemImage);
-      prevSrcRef.current = srcToPlay;
+    if (isUnresolvedIdb && heroMediaList.length > 1) {
+      setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
     }
-  }, [srcToPlay, isCurrentItemImage]);
+  }, [isUnresolvedIdb, heroMediaList.length]);
+
+  const isCurrentItemImage =
+    !rawMediaSrc.startsWith('idb://vid_') &&
+    (isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc));
+  const isBrotherhoodHero = srcToPlay.includes('brotherhood_hero_loop');
 
   const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
   const heroZoom = Number(
@@ -72,72 +80,85 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       ? settings.heroImagePosition || settings.heroVideoPosition
       : settings.heroVideoPosition || settings.heroImagePosition) || '50% 50%';
 
+  const attachVideoRef = useCallback((el: HTMLVideoElement | null) => {
+    heroVideoRef.current = el;
+    if (!el) return;
+    el.muted = true;
+    el.defaultMuted = true;
+    el.playsInline = true;
+    el.autoplay = true;
+    el.controls = false;
+    el.setAttribute('muted', '');
+    el.setAttribute('playsinline', '');
+    el.setAttribute('webkit-playsinline', 'true');
+  }, []);
+
   // Seamless mixed-playlist auto-cycling & mobile autoplay enforcement (no play button)
   useEffect(() => {
+    setAutoplayBlocked(false);
+
     if (isCurrentItemImage) {
       setIsVideoPlaying(false);
-      console.log('[HeroBanner] Current item is image, setting 5s timer for index:', heroVideoIndex);
       if (heroMediaList.length <= 1) return;
       const timer = setTimeout(() => {
-        setHeroVideoIndex((prev) => {
-          const next = (prev + 1) % heroMediaList.length;
-          console.log('[HeroBanner] Advancing image index from', prev, 'to', next);
-          return next;
-        });
+        setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       }, 5000);
       return () => clearTimeout(timer);
+    }
+
+    if (!srcToPlay) {
+      setIsVideoPlaying(false);
+      return;
     }
 
     const video = heroVideoRef.current;
     if (!video) return;
 
-    setIsVideoPlaying(!video.paused && !video.ended && video.readyState > 2);
+    attachVideoRef(video);
+    setIsVideoPlaying(!video.paused && !video.ended && video.readyState >= 2);
 
-    // Ensure strict mobile & desktop autoplay compliance
-    video.muted = true;
-    video.defaultMuted = true;
-    video.playsInline = true;
-    video.controls = false;
-    video.setAttribute('muted', '');
-    video.setAttribute('playsinline', '');
-    video.setAttribute('webkit-playsinline', 'true');
-
-    if (video.src !== srcToPlay && video.getAttribute('src') !== srcToPlay) {
-      console.log('[HeroBanner] Updating video element src directly to:', srcToPlay);
-      video.src = srcToPlay;
-      video.load();
-    }
+    let disposed = false;
 
     const attemptPlay = () => {
+      if (disposed) return;
       video.muted = true;
       video.defaultMuted = true;
+      video.playsInline = true;
       video.controls = false;
       const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
-            console.log('[HeroBanner] Video play succeeded for src:', srcToPlay);
-            setIsVideoPlaying(true);
+            if (!disposed) {
+              setAutoplayBlocked(false);
+              setIsVideoPlaying(true);
+            }
           })
           .catch((err) => {
-            console.warn('[HeroBanner] Video play blocked/failed:', err);
-            setIsVideoPlaying(false);
+            if (disposed) return;
+            if (err?.name === 'NotAllowedError') {
+              setAutoplayBlocked(true);
+              setIsVideoPlaying(false);
+            }
           });
       }
     };
 
     const handlePlaying = () => {
-      console.log('[HeroBanner] Video playing event fired for:', srcToPlay);
-      setIsVideoPlaying(true);
+      if (!disposed) {
+        setAutoplayBlocked(false);
+        setIsVideoPlaying(true);
+      }
     };
+
     const handlePause = () => {
-      if (!video.ended) {
+      if (!disposed && !video.ended) {
         attemptPlay();
       }
     };
 
     const handleEnded = () => {
-      console.log('[HeroBanner] Video ended event fired for index:', heroVideoIndex);
+      if (disposed) return;
       if (heroMediaList.length > 1) {
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       } else {
@@ -146,30 +167,32 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       }
     };
 
-    const handleError = (e: any) => {
+    const handleError = (e: Event) => {
       console.error('[HeroBanner] Video playback error for src:', srcToPlay, e);
-      if (heroMediaList.length > 1) {
+      if (!disposed && heroMediaList.length > 1) {
         setHeroVideoIndex((prev) => (prev + 1) % heroMediaList.length);
       }
     };
 
     const handleUserGestureRetry = () => {
-      if (video.paused) {
+      if (!disposed && video.paused) {
         attemptPlay();
       }
     };
 
-    attemptPlay();
     video.addEventListener('canplay', attemptPlay);
     video.addEventListener('loadeddata', attemptPlay);
     video.addEventListener('playing', handlePlaying);
     video.addEventListener('pause', handlePause);
     video.addEventListener('ended', handleEnded);
     video.addEventListener('error', handleError);
-    window.addEventListener('touchstart', handleUserGestureRetry, { passive: true, once: true });
-    window.addEventListener('pointerdown', handleUserGestureRetry, { passive: true, once: true });
+    window.addEventListener('touchstart', handleUserGestureRetry, { passive: true });
+    window.addEventListener('pointerdown', handleUserGestureRetry, { passive: true });
+
+    attemptPlay();
 
     return () => {
+      disposed = true;
       video.removeEventListener('canplay', attemptPlay);
       video.removeEventListener('loadeddata', attemptPlay);
       video.removeEventListener('playing', handlePlaying);
@@ -179,7 +202,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       window.removeEventListener('touchstart', handleUserGestureRetry);
       window.removeEventListener('pointerdown', handleUserGestureRetry);
     };
-  }, [srcToPlay, isCurrentItemImage, heroMediaList.length]);
+  }, [srcToPlay, isCurrentItemImage, heroMediaList.length, heroVideoIndex, attachVideoRef]);
 
   return (
     <section
@@ -209,10 +232,11 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   objectPosition: heroPosition,
                 }}
               />
-            ) : (
+            ) : srcToPlay ? (
               <>
-                {/* Fallback poster shown only for default BrotherHood hero or when a custom hero fallback image is configured */}
-                {!isVideoPlaying && (isBrotherhoodHero || settings.heroImageUrl) && (
+                {/* Fallback poster shown only if browser blocks autoplay or during default hero initial frame */}
+                {((!isVideoPlaying && isBrotherhoodHero) ||
+                  (autoplayBlocked && Boolean(settings.heroImageUrl))) && (
                   <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
                     <img
                       src={
@@ -229,8 +253,8 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   </div>
                 )}
                 <video
-                  key={srcToPlay}
-                  ref={heroVideoRef}
+                  key={`${heroVideoIndex}:${srcToPlay}`}
+                  ref={attachVideoRef}
                   src={srcToPlay}
                   muted
                   playsInline
@@ -243,15 +267,15 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   className={cn(
                     'w-full h-full pointer-events-none autoplay-video transition-opacity duration-300',
                     heroFitClass,
-                    isVideoPlaying || (!isBrotherhoodHero && !settings.heroImageUrl)
-                      ? 'opacity-100'
-                      : 'opacity-0'
+                    isVideoPlaying || !isBrotherhoodHero ? 'opacity-100' : 'opacity-0'
                   )}
                   style={{
                     objectPosition: heroPosition,
                   }}
                 />
               </>
+            ) : (
+              <div className="w-full h-full bg-zinc-950" />
             )
           ) : settings.heroImageUrl ? (
             <ResolvedImage

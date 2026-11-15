@@ -39,6 +39,12 @@ export async function saveMedia(key: string, value: string | Blob): Promise<stri
   }
 }
 
+export function getCachedMediaSync(idbUri?: string): string {
+  if (!idbUri) return '';
+  if (!idbUri.startsWith('idb://')) return idbUri;
+  return objectUrlCache.get(idbUri) || '';
+}
+
 export async function getMedia(idbUri: string): Promise<string> {
   if (!idbUri || !idbUri.startsWith('idb://')) return idbUri;
   const cached = objectUrlCache.get(idbUri);

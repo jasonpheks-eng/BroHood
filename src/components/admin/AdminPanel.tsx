@@ -163,10 +163,20 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     []
   );
 
+  const formSettingsRef = React.useRef(formSettings);
+  React.useEffect(() => {
+    formSettingsRef.current = formSettings;
+  }, [formSettings]);
+
   const settingsRef = React.useRef(settings);
   React.useEffect(() => {
     settingsRef.current = settings;
   }, [settings]);
+
+  const uploadingHeroMediaRef = React.useRef(false);
+  React.useEffect(() => {
+    uploadingHeroMediaRef.current = uploadingHeroMedia;
+  }, [uploadingHeroMedia]);
 
   const lastSavedWhatsappRef = React.useRef((settings.whatsappNumber || '').trim());
 
@@ -190,9 +200,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [productToDelete, setProductToDelete] = useState<Product | null>(null);
   const [isDeleting, setIsDeleting] = useState(false);
 
-  // Sync formSettings when settings prop changes only when there are no pending unsaved edits
+  // Sync formSettings when settings prop changes only when there are no pending unsaved edits or active hero uploads
   React.useEffect(() => {
-    if (!isSettingsDirty) {
+    if (!isSettingsDirty && !uploadingHeroMediaRef.current) {
       setRawFormSettings({ ...settings });
       lastSavedWhatsappRef.current = (settings.whatsappNumber || '').trim();
     }
@@ -616,25 +626,34 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const applyAndSyncHeroSettings = async (patch: Partial<Settings>, successMsg: string) => {
     const merged: Settings = {
       ...settingsRef.current,
-      ...formSettings,
+      ...formSettingsRef.current,
       ...patch,
     };
     if (Array.isArray(merged.heroVideoUrls)) {
       const usable = merged.heroVideoUrls.filter((u) => Boolean(u && u.trim()));
-      merged.heroVideoUrls = usable;
-      merged.heroVideoUrl = usable[0] || '/assets/aistudio/brotherhood_hero_loop.mp4';
+      merged.heroVideoUrls =
+        usable.length > 0 ? usable : ['/assets/aistudio/brotherhood_hero_loop.mp4'];
+      merged.heroVideoUrl = merged.heroVideoUrls[0];
     }
+    setIsSettingsDirty(true);
     setRawFormSettings(merged);
-    setIsSettingsDirty(false);
-    await onSaveSettings(merged);
-    lastSavedWhatsappRef.current = (merged.whatsappNumber || '').trim();
-    showToast(successMsg);
+    formSettingsRef.current = merged;
+    try {
+      await onSaveSettings(merged);
+      lastSavedWhatsappRef.current = (merged.whatsappNumber || '').trim();
+      setIsSettingsDirty(false);
+      showToast(successMsg);
+    } catch (err) {
+      console.error('Failed to persist hero settings:', err);
+      showToast('Uploaded locally — click Save Settings to retry cloud sync');
+    }
   };
 
   const handleHeroMultiUpload = async (fileList: FileList | null) => {
     if (!fileList || fileList.length === 0) return;
     setHeroUploadError(null);
     setUploadingHeroMedia(true);
+    uploadingHeroMediaRef.current = true;
     try {
       const uploadedUrls: string[] = [];
       for (const file of Array.from(fileList)) {
@@ -644,9 +663,12 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         }
       }
       if (uploadedUrls.length > 0) {
-        const current = (formSettings.heroVideoUrls || []).filter((u) => Boolean(u && u.trim()));
+        const current = (formSettingsRef.current.heroVideoUrls || []).filter((u) =>
+          Boolean(u && u.trim())
+        );
         const hadOnlyDefault =
-          current.length === 1 && current[0] === '/assets/aistudio/brotherhood_hero_loop.mp4';
+          current.length === 0 ||
+          (current.length === 1 && current[0] === '/assets/aistudio/brotherhood_hero_loop.mp4');
         const nextList = hadOnlyDefault ? [...uploadedUrls] : [...current, ...uploadedUrls];
         await applyAndSyncHeroSettings(
           {
@@ -654,7 +676,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
             heroVideoUrl: nextList[0],
           },
           hadOnlyDefault
-            ? 'Replaced default hero media & synced'
+            ? 'Hero video active & autoplaying'
             : `Added & synced ${uploadedUrls.length} hero ${uploadedUrls.length === 1 ? 'item' : 'items'}`
         );
       }
@@ -663,6 +685,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setHeroUploadError('Error uploading hero media.');
       showToast('Error uploading hero media.');
     } finally {
+      uploadingHeroMediaRef.current = false;
       setUploadingHeroMedia(false);
     }
   };
@@ -1738,7 +1761,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i, arr) => {
                   const isImageTrack = Boolean(
                     url &&
+                      !url.toLowerCase().startsWith('idb://vid_') &&
                       (url.toLowerCase().startsWith('data:image/') ||
+                        url.toLowerCase().startsWith('idb://img_') ||
                         /\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/i.test(url))
                   );
                   return (
@@ -1822,27 +1847,44 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
 
                         <div className="flex items-center gap-1.5 shrink-0">
                           <label className="flex-1 sm:flex-initial bg-black text-white hover:bg-zinc-800 px-3 py-2 text-[10px] font-black uppercase tracking-widest cursor-pointer transition-colors flex items-center justify-center gap-1.5 shrink-0 whitespace-nowrap">
-                            <Upload size={12} /> Replace File
+                            <Upload size={12} />{' '}
+                            {uploadingHeroMedia
+                              ? uploadProgress !== null
+                                ? `Uploading ${uploadProgress}%`
+                                : 'Uploading...'
+                              : 'Replace File'}
                             <input
                               type="file"
                               accept="image/*,video/*,.mp4,.mov,.m4v,.webm,.3gp,.mkv,image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime"
                               className="hidden"
+                              disabled={uploadingHeroMedia}
                               onChange={async (e) => {
                                 const file = e.target.files?.[0];
                                 e.currentTarget.value = '';
-                                if (file) {
+                                if (!file) return;
+                                setUploadingHeroMedia(true);
+                                uploadingHeroMediaRef.current = true;
+                                try {
                                   const res = await handleFileUpload(file);
                                   if (res) {
-                                    const next = [...arr];
-                                    next[i] = res;
+                                    const liveArr = [
+                                      ...(formSettingsRef.current.heroVideoUrls || [
+                                        '/assets/aistudio/brotherhood_hero_loop.mp4',
+                                      ]),
+                                    ];
+                                    liveArr[i] = res;
+                                    const usable = liveArr.filter((u) => Boolean(u && u.trim()));
                                     await applyAndSyncHeroSettings(
                                       {
-                                        heroVideoUrls: next,
-                                        heroVideoUrl: next[0] || res,
+                                        heroVideoUrls: usable,
+                                        heroVideoUrl: usable[0] || res,
                                       },
-                                      'Hero media updated & synced'
+                                      'Hero video replaced & autoplaying'
                                     );
                                   }
+                                } finally {
+                                  uploadingHeroMediaRef.current = false;
+                                  setUploadingHeroMedia(false);
                                 }
                               }}
                             />
