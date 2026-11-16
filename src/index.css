@@ -168,13 +168,29 @@
 /* Suppress native iOS/Safari/Chrome play button overlays on ambient autoplay videos */
 video.autoplay-video::-webkit-media-controls,
 video.autoplay-video::-webkit-media-controls-enclosure,
+video.autoplay-video::-webkit-media-controls-overlay-enclosure,
 video.autoplay-video::-webkit-media-controls-panel,
 video.autoplay-video::-webkit-media-controls-play-button,
 video.autoplay-video::-webkit-media-controls-start-playback-button,
-video.autoplay-video::-webkit-media-controls-overlay-play-button {
+video.autoplay-video::-webkit-media-controls-overlay-play-button,
+video.autoplay-video::-internal-media-controls-overlay-cast-button,
+#hero-banner-media video::-webkit-media-controls,
+#hero-banner-media video::-webkit-media-controls-enclosure,
+#hero-banner-media video::-webkit-media-controls-overlay-enclosure,
+#hero-banner-media video::-webkit-media-controls-panel,
+#hero-banner-media video::-webkit-media-controls-play-button,
+#hero-banner-media video::-webkit-media-controls-start-playback-button,
+#hero-banner-media video::-webkit-media-controls-overlay-play-button {
   display: none !important;
   -webkit-appearance: none !important;
+  appearance: none !important;
   opacity: 0 !important;
+  width: 0 !important;
+  height: 0 !important;
+  max-width: 0 !important;
+  max-height: 0 !important;
+  overflow: hidden !important;
+  visibility: hidden !important;
   pointer-events: none !important;
 }
 

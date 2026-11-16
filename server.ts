@@ -253,7 +253,12 @@ async function startServer() {
     const stat = fs.statSync(filePath);
     const fileSize = stat.size;
     const ext = path.extname(safeName).toLowerCase();
-    const contentType = MIME_BY_EXT[ext] || 'application/octet-stream';
+    const ua = String(req.headers['user-agent'] || '');
+    const isAppleSafari = /Safari/i.test(ua) && !/Chrome|Chromium|CriOS|Edg|Android/i.test(ua);
+    const contentType =
+      ext === '.mov' && !isAppleSafari
+        ? 'video/mp4'
+        : MIME_BY_EXT[ext] || 'application/octet-stream';
     const range = req.headers.range;
 
     res.setHeader('Cache-Control', 'public, max-age=31536000, immutable');

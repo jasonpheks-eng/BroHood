@@ -151,3 +151,27 @@ export async function getMedia(idbUri: string): Promise<string> {
     return idbUri;
   }
 }
+
+export async function loadMediaBlob(idbUri: string): Promise<Blob | null> {
+  if (!idbUri || !idbUri.startsWith('idb://')) return null;
+  const key = idbUri.replace('idb://', '');
+  try {
+    const db = await openDB();
+    return new Promise((resolve) => {
+      const tx = db.transaction(STORE_NAME, 'readonly');
+      const store = tx.objectStore(STORE_NAME);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        const result = req.result;
+        if (result instanceof Blob) {
+          resolve(result);
+          return;
+        }
+        resolve(null);
+      };
+      req.onerror = () => resolve(null);
+    });
+  } catch {
+    return null;
+  }
+}

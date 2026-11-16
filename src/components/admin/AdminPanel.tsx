@@ -69,6 +69,7 @@ import {
 } from '../../supabase';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { getEmbedVideoInfo, normalizeHeroMediaList, normalizeMediaUrlInput } from '../../mediaUrlUtils';
+import { loadMediaBlob } from '../../mediaStore';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
 import { Helmet } from '../common/Helmet';
@@ -360,20 +361,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const activeBucketName = activeSupabaseCfg.bucket;
   const activeSupabaseUrl = activeSupabaseCfg.url;
 
+  const getSupabaseBucketSetupSql = React.useCallback(
+    (bucketName: string = activeBucketName) =>
+      `insert into storage.buckets (id, name, public) values ('${bucketName}', '${bucketName}', true) on conflict (id) do update set public = true;\ndrop policy if exists "Public read media" on storage.objects;\ncreate policy "Public read media" on storage.objects for select using (bucket_id = '${bucketName}');\ndrop policy if exists "Public upload media" on storage.objects;\ncreate policy "Public upload media" on storage.objects for insert with check (bucket_id = '${bucketName}');\ndrop policy if exists "Public update media" on storage.objects;\ncreate policy "Public update media" on storage.objects for update using (bucket_id = '${bucketName}');\ndrop policy if exists "Public delete media" on storage.objects;\ncreate policy "Public delete media" on storage.objects for delete using (bucket_id = '${bucketName}');`,
+    [activeBucketName]
+  );
+
   const handleRunStorageDiagnostics = React.useCallback(async (overrideExpectedProjectId?: string) => {
     setRunningDiagnostics(true);
+    resetSupabaseBucketCache();
     try {
       const targetExpectedId = (overrideExpectedProjectId ?? expectedProjectId).trim();
       const report = await runSupabaseStorageDiagnostics(targetExpectedId);
       setStorageDiagReport(report);
       setStorageDiagLogs(report.logs);
       if (report.bucketNotFound) {
-        setBucketNotFoundDetail(
-          report.errorMessage ||
-            `Bucket Not Found: "${report.bucketName}" does not exist on Supabase project "${report.configuredProjectId}".`
-        );
-        setHeroNeedsBucketSql(true);
-        showToast('Bucket Not Found on Supabase Storage');
+        if (report.serverFallbackReachable) {
+          // Built-in Express media server is online and serving uploads cleanly; only show alert if an idb:// asset exists
+          const hasLocalOnly = (formSettingsRef.current.heroVideoUrls || []).some((u) =>
+            u.startsWith('idb://')
+          );
+          if (hasLocalOnly) {
+            setBucketNotFoundDetail(
+              report.errorMessage ||
+                `Bucket Not Found: "${report.bucketName}" does not exist on Supabase project "${report.configuredProjectId}".`
+            );
+            setHeroNeedsBucketSql(true);
+          } else {
+            setBucketNotFoundDetail(null);
+            setHeroNeedsBucketSql(false);
+          }
+          showToast('App Media Server online (Supabase bucket optional — see Diagnostics)');
+        } else {
+          setBucketNotFoundDetail(
+            report.errorMessage ||
+              `Bucket Not Found: "${report.bucketName}" does not exist on Supabase project "${report.configuredProjectId}".`
+          );
+          setHeroNeedsBucketSql(true);
+          showToast('Bucket Not Found on Supabase Storage');
+        }
       } else if (!report.projectIdMatches) {
         setBucketNotFoundDetail(null);
         showToast('Supabase Project ID mismatch detected');
@@ -430,13 +456,13 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       setStorageDiagReport(verification.diagnosticReport);
       setStorageDiagLogs(verification.diagnosticReport.logs);
 
-      if (verification.bucketNotFound) {
+      if (verification.bucketNotFound && !verification.diagnosticReport.serverFallbackReachable) {
         setBucketNotFoundDetail(
           verification.diagnosticReport.errorMessage ||
             `Bucket Not Found: "${verification.bucketName}" does not exist on Supabase project "${verification.projectId}".`
         );
         setHeroNeedsBucketSql(true);
-      } else if (verification.bucketExists) {
+      } else if (verification.bucketExists || verification.diagnosticReport.serverFallbackReachable) {
         setBucketNotFoundDetail(null);
         setHeroNeedsBucketSql(false);
       }
@@ -601,29 +627,37 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       showToast(result.errorCode === 'BUCKET_NOT_FOUND' ? 'Bucket Not Found — see diagnostics' : msg);
       return '';
     }
-    setHeroUploadError(null);
-    setBucketNotFoundDetail(null);
-    setHeroNeedsBucketSql(false);
+
     if (result.source === 'supabase') {
+      setHeroUploadError(null);
+      setBucketNotFoundDetail(null);
+      setHeroNeedsBucketSql(false);
       appendDiagnosticLog('success', 'HERO_UPLOAD', `Uploaded to Supabase Storage: ${result.url}`);
       showToast(`${isVideo ? 'Video' : 'Photo'} synced to Supabase`);
     } else if (result.source === 'server') {
+      setHeroUploadError(null);
+      setBucketNotFoundDetail(null);
+      setHeroNeedsBucketSql(false);
       appendDiagnosticLog(
         'info',
         'HERO_UPLOAD',
-        `Stored via chunked app media server: ${result.url}${
-          result.bucketDiagnosticNote ? ` (Supabase note: ${result.bucketDiagnosticNote})` : ''
+        `Stored via app media server (${result.url})${
+          result.bucketDiagnosticNote ? ` · Optional Supabase bucket note: ${result.bucketDiagnosticNote}` : ''
         }`
       );
-      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready!`);
+      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & playing!`);
     } else if (result.source === 'local') {
-      appendDiagnosticLog(
-        'warn',
-        'HERO_UPLOAD',
-        `Saved in browser media store (${result.url}) — run Supabase SQL for cross-device cloud sync`
-      );
-      showToast(`${isVideo ? 'Video' : 'Photo'} uploaded & ready on this device`);
+      const localWarn =
+        `Device-only upload (${result.url}): Supabase Storage bucket "${cfg.bucket}" is not created on "${cfg.projectId}" yet, so other devices cannot fetch this browser-local file. Create the Supabase Storage bucket once below and click Retry Cloud Sync, or paste an HTTPS / Streamable / YouTube link.`;
+      setBucketNotFoundDetail(result.bucketDiagnosticNote || localWarn);
+      setHeroUploadError(localWarn);
+      setHeroNeedsBucketSql(true);
+      appendDiagnosticLog('warn', 'HERO_UPLOAD', localWarn);
+      showToast('Uploaded locally — create Supabase bucket to sync video across devices');
     } else {
+      setHeroUploadError(null);
+      setBucketNotFoundDetail(null);
+      setHeroNeedsBucketSql(false);
       appendDiagnosticLog('info', 'HERO_UPLOAD', `Stored inline/optimized (${result.source})`);
       showToast(`${isVideo ? 'Video' : 'Photo'} synced across devices`);
     }
@@ -631,35 +665,43 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const applyAndSyncHeroSettings = async (patch: Partial<Settings>, successMsg: string) => {
+    const isExplicitDefaultReset = patch.heroExplicitDefaultReset === true;
     const merged: Settings = {
       ...settingsRef.current,
       ...formSettingsRef.current,
       ...patch,
+      heroExplicitDefaultReset: isExplicitDefaultReset,
     };
     if (Array.isArray(merged.heroVideoUrls)) {
       const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
       const usable = normalizeHeroMediaList(merged.heroVideoUrls);
       const customOnly = usable.filter((u) => u !== defaultHero);
-      const finalPlaylist =
-        customOnly.length > 0
-          ? customOnly
-          : usable.length > 0
+      const finalPlaylist = isExplicitDefaultReset
+        ? usable.length > 0
           ? usable
-          : [defaultHero];
+          : [defaultHero]
+        : customOnly;
       merged.heroVideoUrls = finalPlaylist;
-      merged.heroVideoUrl = finalPlaylist[0];
+      merged.heroVideoUrl = finalPlaylist[0] || '';
+      if (customOnly.length > 0) {
+        merged.heroExplicitDefaultReset = false;
+      }
     }
     setIsSettingsDirty(true);
     setRawFormSettings(merged);
     formSettingsRef.current = merged;
     try {
-      await onSaveSettings(merged);
-      lastSavedWhatsappRef.current = (merged.whatsappNumber || '').trim();
-      setIsSettingsDirty(false);
+      const saved = await persistDraftSettings(merged);
+      void forceSyncAllToSupabase({
+        settings: saved,
+        studioGallery: galleryState,
+        products,
+        creatorPosts,
+      });
       showToast(successMsg);
     } catch (err) {
       console.error('Failed to persist hero settings:', err);
-      showToast('Uploaded locally — click Save Settings to retry cloud sync');
+      showToast('Saved locally — click Sync to retry cloud sync');
     }
   };
 
@@ -749,7 +791,25 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   };
 
   const resolveCrossDeviceUrl = async (val: string, label: string): Promise<string> => {
-    if (!val || !val.startsWith('data:')) return val;
+    if (!val) return val;
+    if (val.startsWith('idb://')) {
+      try {
+        const blob = await loadMediaBlob(val);
+        if (!blob) return val;
+        const rawName = val.replace(/^idb:\/\/(vid|img)_\d+_/, '') || `${label}.mp4`;
+        const file = new File([blob], rawName, {
+          type: blob.type || (val.startsWith('idb://vid_') ? 'video/mp4' : 'image/jpeg'),
+        });
+        const uploaded = await uploadMediaToSupabase(file, rawName);
+        if (uploaded.url && !uploaded.url.startsWith('idb://')) {
+          return uploaded.url;
+        }
+      } catch {
+        // Keep idb:// locally if upgrade attempt fails
+      }
+      return val;
+    }
+    if (!val.startsWith('data:')) return val;
     const uploaded = await uploadMediaToSupabase(val, label);
     if (uploaded.url) return uploaded.url;
     if (val.startsWith('data:image/')) {
@@ -761,43 +821,6 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const persistDraftSettings = React.useCallback(
     async (draft: Settings): Promise<Settings> => {
       const sanitized: any = { ...draft };
-      for (const key of Object.keys(sanitized)) {
-        if (typeof sanitized[key] === 'string' && sanitized[key].startsWith('data:')) {
-          sanitized[key] = await resolveCrossDeviceUrl(sanitized[key], `settings_${key}`);
-        }
-      }
-      if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
-        const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
-        const cleanedUrls = await Promise.all(
-          sanitized.heroVideoUrls.map(async (url: string, i: number) => {
-            const cleanInput = normalizeMediaUrlInput(url);
-            if (!cleanInput) return '';
-            if (cleanInput.startsWith('data:')) {
-              return await resolveCrossDeviceUrl(cleanInput, `hero_vid_${i}`);
-            }
-            return cleanInput;
-          })
-        );
-        const filtered = normalizeHeroMediaList(cleanedUrls);
-        const customOnly = filtered.filter((u) => u !== defaultHero);
-        const finalUrls = customOnly.length > 0 ? customOnly : filtered;
-        sanitized.heroVideoUrls = finalUrls.length > 0 ? finalUrls : [defaultHero];
-        sanitized.heroVideoUrl = sanitized.heroVideoUrls[0];
-      }
-
-      if (sanitized.galleryImageUrls && Array.isArray(sanitized.galleryImageUrls)) {
-        const cleanedGallery = await Promise.all(
-          sanitized.galleryImageUrls.map(async (url: string, i: number) => {
-            if (url && url.startsWith('data:')) {
-              return await resolveCrossDeviceUrl(url, `gallery_img_${i}`);
-            }
-            return url;
-          })
-        );
-        sanitized.galleryImageUrls = cleanedGallery.filter(Boolean);
-      }
-
-      delete sanitized.studioGallery;
 
       if (
         sanitized.supabaseUrl !== undefined ||
@@ -814,6 +837,50 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         sanitized.supabaseBucket = updatedCfg.bucket;
         resetSupabaseBucketCache();
       }
+
+      for (const key of Object.keys(sanitized)) {
+        if (
+          typeof sanitized[key] === 'string' &&
+          (sanitized[key].startsWith('data:') || sanitized[key].startsWith('idb://'))
+        ) {
+          sanitized[key] = await resolveCrossDeviceUrl(sanitized[key], `settings_${key}`);
+        }
+      }
+      if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
+        const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+        const isExplicitDefaultReset = sanitized.heroExplicitDefaultReset === true;
+        const cleanedUrls = await Promise.all(
+          sanitized.heroVideoUrls.map(async (url: string, i: number) => {
+            const cleanInput = normalizeMediaUrlInput(url);
+            if (!cleanInput) return '';
+            if (cleanInput.startsWith('data:') || cleanInput.startsWith('idb://')) {
+              return await resolveCrossDeviceUrl(cleanInput, `hero_vid_${i}`);
+            }
+            return cleanInput;
+          })
+        );
+        const filtered = normalizeHeroMediaList(cleanedUrls);
+        const customOnly = filtered.filter((u) => u !== defaultHero);
+        const finalUrls = customOnly.length > 0 ? customOnly : isExplicitDefaultReset ? filtered : [];
+        sanitized.heroVideoUrls = finalUrls;
+        sanitized.heroVideoUrl = finalUrls[0] || '';
+        sanitized.heroExplicitDefaultReset =
+          customOnly.length > 0 ? false : isExplicitDefaultReset && finalUrls.includes(defaultHero);
+      }
+
+      if (sanitized.galleryImageUrls && Array.isArray(sanitized.galleryImageUrls)) {
+        const cleanedGallery = await Promise.all(
+          sanitized.galleryImageUrls.map(async (url: string, i: number) => {
+            if (url && (url.startsWith('data:') || url.startsWith('idb://'))) {
+              return await resolveCrossDeviceUrl(url, `gallery_img_${i}`);
+            }
+            return url;
+          })
+        );
+        sanitized.galleryImageUrls = cleanedGallery.filter(Boolean);
+      }
+
+      delete sanitized.studioGallery;
 
       await onSaveSettings(sanitized);
       lastSavedWhatsappRef.current = (sanitized.whatsappNumber || '').trim();
@@ -863,6 +930,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (syncingNow) return;
     setSyncingNow(true);
     try {
+      resetSupabaseBucketCache();
       const latestGallery =
         committedGalleryOverride ||
         (studioGalleryCommitRef.current ? await studioGalleryCommitRef.current() : galleryState);
@@ -873,7 +941,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         products,
         creatorPosts,
       });
-      if (syncResult.settingsSynced || syncResult.broadcastSent) {
+
+      const hasDeviceOnlyIdb = Boolean(
+        (savedSettings.heroVideoUrls || []).some((u) => u.startsWith('idb://')) ||
+          (savedSettings.heroVideoUrl || '').startsWith('idb://')
+      );
+
+      if (hasDeviceOnlyIdb) {
+        setHeroNeedsBucketSql(true);
+        setHeroUploadError(
+          `Synced store settings, but your uploaded Hero video (${savedSettings.heroVideoUrl}) is stored only inside this browser (idb://). Other devices cannot access browser-local files until you create the Supabase "${activeBucketName}" bucket (see Settings & Visuals -> Hero Media Playlist) or paste a video link.`
+        );
+        showToast('Synced settings — video is device-only (create Supabase bucket to sync video)');
+      } else if (syncResult.settingsSynced || syncResult.broadcastSent) {
         showToast('Synced across all devices & pages!');
       } else {
         showToast('Saved & pushed live to connected pages!');
@@ -1778,16 +1858,67 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {
                           heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
                           heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+                          heroExplicitDefaultReset: true,
                         },
                         'Default BrotherHood hero video applied & synced'
                       )
                     }
                     className="text-[10px] font-black uppercase tracking-widest text-zinc-500 hover:text-black border border-zinc-200 px-2.5 py-2 transition-colors whitespace-nowrap"
                   >
-                    Reset Default
+                    Reset to Default
                   </button>
                 </div>
               </div>
+
+              {(formSettings.heroVideoUrls || []).some((u) => u.startsWith('idb://')) &&
+                !bucketNotFoundDetail && (
+                  <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-2">
+                    <div className="flex items-start gap-2">
+                      <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
+                      <div className="space-y-1">
+                        <div className="font-black uppercase tracking-wider text-amber-900">
+                          Device-Only Video Detected (`idb://`) — Cloud Storage Needed for Other Devices
+                        </div>
+                        <p className="text-[11px] leading-relaxed">
+                          This hero video is stored only inside this browser because Supabase Storage bucket &quot;{activeBucketName}&quot; is not created on project &quot;{activeProjectId}&quot; yet. Create the bucket once in Supabase SQL Editor and click <strong>Retry Cloud Sync</strong>, or paste an MP4 / Streamable / YouTube link.
+                        </p>
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 pl-6">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
+                            showToast('Copied Supabase media bucket SQL!');
+                          } catch {
+                            showToast('See supabase_schema.sql in project');
+                          }
+                        }}
+                        className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        <Copy size={12} /> Copy Supabase Media Bucket SQL
+                      </button>
+                      <a
+                        href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        Open SQL Editor →
+                      </a>
+                      <button
+                        type="button"
+                        onClick={() => void handleSyncNow()}
+                        disabled={syncingNow}
+                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        <RefreshCw size={12} className={syncingNow ? 'animate-spin' : ''} />
+                        Retry Cloud Sync
+                      </button>
+                    </div>
+                  </div>
+                )}
 
               {bucketNotFoundDetail && (
                 <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-2">
@@ -1796,11 +1927,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
                       <div className="space-y-1">
                         <div className="font-black uppercase tracking-wider text-amber-900">
-                          Supabase Storage Error: Bucket Not Found (&quot;{activeBucketName}&quot;)
+                          Supabase Storage Bucket Setup Required (&quot;{activeBucketName}&quot;)
                         </div>
                         <p className="text-[11px] leading-relaxed">{bucketNotFoundDetail}</p>
                         <div className="text-[10px] font-mono text-amber-800">
-                          Project ID: {activeProjectId} · Endpoint: {activeSupabaseUrl}/storage/v1
+                          Step 1: Click Copy SQL · Step 2: Click Open SQL Editor &amp; Run · Step 3: Click Re-check Bucket
                         </div>
                       </div>
                     </div>
@@ -1817,9 +1948,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     <button
                       type="button"
                       onClick={async () => {
-                        const sql = `insert into storage.buckets (id, name, public) values ('${activeBucketName}', '${activeBucketName}', true) on conflict (id) do update set public = true;\ndrop policy if exists "Public read media" on storage.objects;\ncreate policy "Public read media" on storage.objects for select using (bucket_id = '${activeBucketName}');\ndrop policy if exists "Public upload media" on storage.objects;\ncreate policy "Public upload media" on storage.objects for insert with check (bucket_id = '${activeBucketName}');\ndrop policy if exists "Public update media" on storage.objects;\ncreate policy "Public update media" on storage.objects for update using (bucket_id = '${activeBucketName}');`;
                         try {
-                          await navigator.clipboard.writeText(sql);
+                          await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
                           showToast('Copied Supabase media bucket SQL!');
                         } catch {
                           showToast('See supabase_schema.sql in project');
@@ -1829,6 +1959,14 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     >
                       <Copy size={12} /> Copy Supabase Media Bucket SQL
                     </button>
+                    <a
+                      href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                    >
+                      Open SQL Editor →
+                    </a>
                     <button
                       type="button"
                       onClick={() => handleRunStorageDiagnostics()}
@@ -1863,9 +2001,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <button
                         type="button"
                         onClick={async () => {
-                          const sql = `insert into storage.buckets (id, name, public) values ('media', 'media', true) on conflict (id) do update set public = true;\ndrop policy if exists "Public read media" on storage.objects;\ncreate policy "Public read media" on storage.objects for select using (bucket_id = 'media');\ndrop policy if exists "Public upload media" on storage.objects;\ncreate policy "Public upload media" on storage.objects for insert with check (bucket_id = 'media');\ndrop policy if exists "Public update media" on storage.objects;\ncreate policy "Public update media" on storage.objects for update using (bucket_id = 'media');`;
                           try {
-                            await navigator.clipboard.writeText(sql);
+                            await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
                             showToast('Copied Supabase media bucket SQL!');
                           } catch {
                             showToast('See supabase_schema.sql in project');
@@ -1875,13 +2012,31 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       >
                         <Copy size={12} /> Copy Supabase Media Bucket SQL
                       </button>
+                      <a
+                        href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-rose-300 bg-white hover:bg-rose-100 text-rose-800 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        Open SQL Editor →
+                      </a>
                     </div>
                   )}
                 </div>
               )}
 
               <div className="space-y-3">
-                {(formSettings.heroVideoUrls || ['/assets/aistudio/brotherhood_hero_loop.mp4']).map((url, i, arr) => {
+                {(formSettings.heroVideoUrls || []).length === 0 && (
+                  <div className="p-5 bg-zinc-50 border border-dashed border-zinc-300 text-center space-y-1.5">
+                    <div className="text-[11px] font-black uppercase tracking-widest text-zinc-700">
+                      No Hero Media Selected
+                    </div>
+                    <p className="text-[11px] text-zinc-500">
+                      Upload a video/photo or paste a link above to make it the master hero across all devices. The default loop only plays if you explicitly click <strong>Reset Default</strong>.
+                    </p>
+                  </div>
+                )}
+                {(formSettings.heroVideoUrls || []).map((url, i, arr) => {
                   const cleanDisplayUrl = url.includes('<') ? normalizeMediaUrlInput(url) || url : url;
                   const embedMeta = getEmbedVideoInfo(cleanDisplayUrl);
                   const isImageTrack = Boolean(
@@ -2055,11 +2210,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                                 try {
                                   const res = await handleFileUpload(file);
                                   if (res) {
-                                    const liveArr = [
-                                      ...(formSettingsRef.current.heroVideoUrls || [
-                                        '/assets/aistudio/brotherhood_hero_loop.mp4',
-                                      ]),
-                                    ];
+                                    const liveArr = [...(formSettingsRef.current.heroVideoUrls || [])];
                                     liveArr[i] = res;
                                     const usable = liveArr.filter((u) => Boolean(u && u.trim()));
                                     await applyAndSyncHeroSettings(
@@ -2444,16 +2595,28 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         </div>
                         <div
                           className={
+                            storageDiagReport.serverFallbackReachable
+                              ? 'text-emerald-700 font-bold'
+                              : 'text-amber-700 font-bold'
+                          }
+                        >
+                          App Media Server:{' '}
+                          {storageDiagReport.serverFallbackReachable ? 'ONLINE (/uploads/)' : 'OFFLINE'}
+                        </div>
+                        <div
+                          className={
                             storageDiagReport.bucketExists
                               ? 'text-emerald-700 font-bold'
                               : 'text-amber-700 font-bold'
                           }
                         >
-                          Bucket ({storageDiagReport.bucketName}):{' '}
+                          Supabase Bucket ({storageDiagReport.bucketName}):{' '}
                           {storageDiagReport.bucketExists
                             ? 'CONNECTED'
                             : storageDiagReport.bucketNotFound
-                            ? 'BUCKET NOT FOUND'
+                            ? storageDiagReport.serverFallbackReachable
+                              ? 'NOT CREATED (OPTIONAL)'
+                              : 'BUCKET NOT FOUND'
                             : 'UNREACHABLE'}
                         </div>
                       </div>
@@ -2466,6 +2629,49 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     )}
                   </div>
                 </div>
+
+                {storageDiagReport?.bucketNotFound && (
+                  <div className="p-3 bg-amber-50 border border-amber-200 text-amber-950 text-xs flex flex-col sm:flex-row sm:items-center justify-between gap-2.5">
+                    <div className="space-y-0.5">
+                      <div className="font-black uppercase tracking-wider text-[10px] text-amber-900">
+                        {storageDiagReport.serverFallbackReachable
+                          ? `App Media Server is Online · Optional Supabase Bucket ("${storageDiagReport.bucketName}") Setup`
+                          : `Supabase Bucket "${storageDiagReport.bucketName}" Not Created Yet`}
+                      </div>
+                      <p className="text-[11px] text-amber-900/90 leading-snug">
+                        {storageDiagReport.serverFallbackReachable
+                          ? 'Hero photos & videos upload cleanly through the built-in App Media Server. To also mirror uploads to Supabase Storage CDN, run the bucket SQL once in Supabase SQL Editor.'
+                          : `Create public bucket "${storageDiagReport.bucketName}" once in Supabase SQL Editor, then click Run Storage Diagnostics again.`}
+                      </p>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 shrink-0">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(
+                              getSupabaseBucketSetupSql(storageDiagReport.bucketName)
+                            );
+                            showToast('Copied Supabase media bucket SQL!');
+                          } catch {
+                            showToast('See supabase_schema.sql in project');
+                          }
+                        }}
+                        className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        <Copy size={11} /> Copy Bucket SQL
+                      </button>
+                      <a
+                        href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5 whitespace-nowrap"
+                      >
+                        Open SQL Editor →
+                      </a>
+                    </div>
+                  </div>
+                )}
 
                 {storageDiagLogs.length > 0 && (
                   <div className="bg-zinc-950 text-zinc-100 border border-zinc-800 p-3 font-mono text-[11px] max-h-56 overflow-y-auto space-y-1">
@@ -3135,7 +3341,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
               {/* Verification Status Panel */}
               {apiVerificationResult && (
                 <div
-                  className={`p-3.5 border text-xs space-y-2 ${
+                  className={`p-3.5 border text-xs space-y-2.5 ${
                     apiVerificationResult.ok
                       ? 'bg-emerald-50 border-emerald-200 text-emerald-950'
                       : apiVerificationResult.bucketNotFound
@@ -3153,14 +3359,45 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                       <span>{apiVerificationResult.summary}</span>
                     </div>
                     <span className="font-mono text-[10px] uppercase">
-                      REST Auth: {apiVerificationResult.restAuthorized ? 'OK' : 'FAILED'} · Bucket:{' '}
+                      REST Auth: {apiVerificationResult.restAuthorized ? 'OK' : 'FAILED'} · App Server:{' '}
+                      {apiVerificationResult.diagnosticReport.serverFallbackReachable ? 'ONLINE' : 'OFFLINE'} · Bucket:{' '}
                       {apiVerificationResult.bucketExists
                         ? 'CONNECTED'
                         : apiVerificationResult.bucketNotFound
-                        ? 'BUCKET NOT FOUND'
+                        ? apiVerificationResult.diagnosticReport.serverFallbackReachable
+                          ? 'NOT CREATED (OPTIONAL)'
+                          : 'BUCKET NOT FOUND'
                         : 'ERROR'}
                     </span>
                   </div>
+                  {apiVerificationResult.bucketNotFound && (
+                    <div className="flex flex-wrap items-center gap-2 pt-1">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(
+                              getSupabaseBucketSetupSql(apiVerificationResult.bucketName)
+                            );
+                            showToast('Copied Supabase media bucket SQL!');
+                          } catch {
+                            showToast('See supabase_schema.sql in project');
+                          }
+                        }}
+                        className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        <Copy size={11} /> Copy Bucket SQL
+                      </button>
+                      <a
+                        href={`https://supabase.com/dashboard/project/${apiVerificationResult.projectId}/sql/new`}
+                        target="_blank"
+                        rel="noopener noreferrer"
+                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                      >
+                        Open SQL Editor →
+                      </a>
+                    </div>
+                  )}
                 </div>
               )}
 

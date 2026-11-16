@@ -107,6 +107,7 @@ export function getEmbedVideoInfo(
         if (autoplay) params.set('autoplay', '1');
         if (muted) params.set('muted', '1');
         params.set('nocontrols', '1');
+        params.set('controls', '0');
         params.set('loop', loop ? '1' : '0');
         return {
           isEmbed: true,
@@ -142,6 +143,9 @@ export function getEmbedVideoInfo(
           autoplay: autoplay ? '1' : '0',
           mute: muted ? '1' : '0',
           controls: '0',
+          disablekb: '1',
+          fs: '0',
+          iv_load_policy: '3',
           playsinline: '1',
           rel: '0',
           modestbranding: '1',

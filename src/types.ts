@@ -104,6 +104,7 @@ export interface Settings {
   heroVideoZoom?: number;
   heroVideoPosition?: string;
   heroVideoUrls?: string[];
+  heroExplicitDefaultReset?: boolean;
   heroImageZoom?: number;
   heroImagePosition?: string;
   featuredImageZoom?: number;

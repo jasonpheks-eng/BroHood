@@ -23,7 +23,8 @@ import {
 } from '../../types';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
 import { inferMediaType } from '../../hooks/useStudioGalleryState';
-import { uploadMediaToSupabase, detectIsVideoFile } from '../../supabaseSync';
+import { uploadMediaToSupabase, detectIsVideoFile, resetSupabaseBucketCache } from '../../supabaseSync';
+import { loadMediaBlob } from '../../mediaStore';
 import { compressImageForCrossDevice } from '../../utils';
 
 interface StudioGalleryAdminProps {
@@ -195,11 +196,26 @@ export const StudioGalleryAdmin: React.FC<StudioGalleryAdminProps> = ({
   };
 
   const saveDraftAndReturn = async (showSavedToast = true): Promise<StudioGalleryState> => {
+    resetSupabaseBucketCache();
     const sanitizedItems = await Promise.all(
       draft.items.map(async (item, idx) => {
         let mediaSrc = item.image || '';
         const mediaType = inferMediaType(mediaSrc, item.mediaType);
-        if (mediaSrc.startsWith('data:')) {
+        if (mediaSrc.startsWith('idb://')) {
+          try {
+            const blob = await loadMediaBlob(mediaSrc);
+            if (blob) {
+              const rawName = item.mediaMetadata?.fileName || `studio_tile_${item.id || idx}`;
+              const file = new File([blob], rawName, { type: blob.type || 'application/octet-stream' });
+              const uploaded = await uploadMediaToSupabase(file, rawName);
+              if (uploaded.url && !uploaded.url.startsWith('idb://')) {
+                mediaSrc = uploaded.url;
+              }
+            }
+          } catch {
+            // Keep local idb:// fallback if cloud unavailable
+          }
+        } else if (mediaSrc.startsWith('data:')) {
           const uploaded = await uploadMediaToSupabase(
             mediaSrc,
             item.mediaMetadata?.fileName || `studio_tile_${item.id || idx}`

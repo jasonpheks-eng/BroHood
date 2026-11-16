@@ -260,30 +260,50 @@ export async function runSupabaseStorageDiagnostics(
       publicProbeJson = null;
     }
 
-    const bucketMissing =
-      isBucketNotFoundError(bucketJson || bucketBody) ||
-      isBucketNotFoundError(publicProbeJson || publicProbeBody);
+    const metadataMissing = isBucketNotFoundError(bucketJson || bucketBody);
+    const publicProbeMissing = isBucketNotFoundError(publicProbeJson || publicProbeBody);
+    const publicBucketReachable =
+      publicProbeRes.ok ||
+      (!publicProbeMissing && (publicProbeRes.status === 400 || publicProbeRes.status === 404));
 
-    if (bucketMissing) {
-      const handled = handleSupabaseStorageBucketError(
-        bucketJson || publicProbeJson || 'Bucket not found',
-        'Admin Settings Storage Diagnostics',
-        activeBucket,
-        configuredProjectId
+    if (bucketRes.ok) {
+      bucketExists = true;
+      bucketNotFound = false;
+      storageReachable = true;
+      cachedBucketStatus = { exists: true, checkedAt: Date.now() };
+      log(
+        'success',
+        'BUCKET_PROBE',
+        `Bucket "${activeBucket}" exists and is reachable (public: ${bucketJson?.public ?? 'verified'}).`
       );
-      bucketNotFound = true;
-      bucketExists = false;
-      cachedBucketStatus = { exists: false, checkedAt: Date.now(), lastError: handled.rawMessage };
-      errorMessage = handled.detail;
-      log('error', 'BUCKET_NOT_FOUND', handled.detail);
-    } else {
+    } else if (publicBucketReachable) {
+      bucketExists = true;
+      bucketNotFound = false;
+      storageReachable = true;
+      cachedBucketStatus = { exists: true, checkedAt: Date.now() };
+      log(
+        'success',
+        'BUCKET_PROBE',
+        `Bucket "${activeBucket}" is publicly reachable (object probe returned non-bucket-missing HTTP ${publicProbeRes.status}; metadata endpoint hidden by anon RLS).`
+      );
+    } else if (metadataMissing || publicProbeMissing) {
       const { error: listError } = await getSupabaseClient().storage
         .from(activeBucket)
-        .list('', { limit: 5 });
+        .list('', { limit: 1 });
 
-      if (listError && isBucketNotFoundError(listError)) {
+      if (listError && !isBucketNotFoundError(listError)) {
+        bucketExists = true;
+        bucketNotFound = false;
+        storageReachable = true;
+        cachedBucketStatus = { exists: true, checkedAt: Date.now() };
+        log(
+          'success',
+          'BUCKET_PROBE',
+          `Bucket "${activeBucket}" verified via Storage SDK.`
+        );
+      } else {
         const handled = handleSupabaseStorageBucketError(
-          listError,
+          listError || bucketJson || publicProbeJson || 'Bucket not found',
           'Admin Settings Storage Diagnostics',
           activeBucket,
           configuredProjectId
@@ -293,19 +313,17 @@ export async function runSupabaseStorageDiagnostics(
         cachedBucketStatus = { exists: false, checkedAt: Date.now(), lastError: handled.rawMessage };
         errorMessage = handled.detail;
         log('error', 'BUCKET_NOT_FOUND', handled.detail);
-      } else {
-        bucketExists = true;
-        bucketNotFound = false;
-        storageReachable = true;
-        cachedBucketStatus = { exists: true, checkedAt: Date.now() };
-        log(
-          'success',
-          'BUCKET_PROBE',
-          `Bucket "${activeBucket}" exists and is reachable (public: ${
-            bucketJson?.public ?? 'verified'
-          }).`
-        );
       }
+    } else {
+      bucketExists = true;
+      bucketNotFound = false;
+      storageReachable = true;
+      cachedBucketStatus = { exists: true, checkedAt: Date.now() };
+      log(
+        'success',
+        'BUCKET_PROBE',
+        `Bucket "${activeBucket}" responded with HTTP ${bucketRes.status} / public probe HTTP ${publicProbeRes.status}.`
+      );
     }
   } catch (err) {
     const handled = handleSupabaseStorageBucketError(
@@ -474,17 +492,20 @@ export async function traceUploadAttempt(): Promise<UploadRequestTraceResult[]> 
   const timestamp = new Date().toLocaleTimeString();
 
   const urlsToTrace = [
-    { method: 'GET', url: `${cfg.url}/storage/v1/bucket/${encodeURIComponent(cfg.bucket)}` },
-    { method: 'GET', url: `${cfg.url}/storage/v1/bucket` },
-    { method: 'GET', url: `${cfg.url}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/__health_probe__.txt` },
-    { method: 'POST', url: `${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/uploads/__trace_probe__.txt` },
+    { method: 'GET', url: '/api/upload-media-health', isLocalServer: true },
+    { method: 'GET', url: `${cfg.url}/storage/v1/bucket/${encodeURIComponent(cfg.bucket)}`, isLocalServer: false },
+    { method: 'GET', url: `${cfg.url}/storage/v1/bucket`, isLocalServer: false },
+    { method: 'GET', url: `${cfg.url}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/__health_probe__.txt`, isLocalServer: false },
+    { method: 'POST', url: `${cfg.url}/storage/v1/object/${encodeURIComponent(cfg.bucket)}/uploads/__trace_probe__.txt`, isLocalServer: false },
   ];
 
   for (const item of urlsToTrace) {
-    const reqHeaders: Record<string, string> = {
-      apikey: cfg.anonKey,
-      Authorization: `Bearer ${cfg.anonKey}`,
-    };
+    const reqHeaders: Record<string, string> = item.isLocalServer
+      ? {}
+      : {
+          apikey: cfg.anonKey,
+          Authorization: `Bearer ${cfg.anonKey}`,
+        };
     if (item.method === 'POST') {
       reqHeaders['Content-Type'] = 'text/plain';
     }
@@ -502,17 +523,26 @@ export async function traceUploadAttempt(): Promise<UploadRequestTraceResult[]> 
       });
 
       const bodyText = await resp.text();
-      const bucketMissing = isBucketNotFoundError(bodyText) || resp.status === 404;
+      const bucketMissing = !item.isLocalServer && isBucketNotFoundError(bodyText);
+      const bucketConfirmedPresent =
+        item.isLocalServer
+          ? resp.ok
+          : resp.ok ||
+            (!bucketMissing &&
+              item.url.includes('/object/public/') &&
+              (resp.status === 400 || resp.status === 404));
 
       traces.push({
         requestUrl: item.url,
         method: item.method,
-        requestHeaders: { apikey: cfg.anonKey.slice(0, 10) + '...', Authorization: 'Bearer ...' },
+        requestHeaders: item.isLocalServer
+          ? { Host: 'App Express Media Server' }
+          : { apikey: cfg.anonKey.slice(0, 10) + '...', Authorization: 'Bearer ...' },
         responseStatus: resp.status,
         responseStatusText: resp.statusText,
         responseHeaders: respHeaders,
         responseBody: bodyText.slice(0, 500),
-        bucketExists: resp.ok,
+        bucketExists: bucketConfirmedPresent,
         isBucketNotFound: bucketMissing,
         timestamp,
       });
@@ -576,6 +606,17 @@ async function hasSupabaseMediaBucket(): Promise<{
     }
     const handled = handleSupabaseStorageBucketError(parsed, 'Media Upload Preflight');
 
+    // Also check public object endpoint directly (anon RLS often hides /bucket/:id even when public bucket exists)
+    const pubResp = await fetch(
+      `${cfg.url}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/__health_probe__.txt`
+    );
+    const pubText = await pubResp.text();
+    const pubMissing = isBucketNotFoundError(pubText);
+    if (!pubMissing) {
+      cachedBucketStatus = { exists: true, checkedAt: now };
+      return { exists: true, bucketNotFound: false, resolvedBucket: cfg.bucket };
+    }
+
     // Also check if another public bucket exists on this Supabase project
     try {
       const listResp = await fetch(`${cfg.url}/storage/v1/bucket`, {
@@ -602,29 +643,12 @@ async function hasSupabaseMediaBucket(): Promise<{
       // ignore bucket list probe failure
     }
 
-    if (handled.isBucketNotFound) {
-      cachedBucketStatus = { exists: false, checkedAt: now, lastError: handled.rawMessage };
-      return {
-        exists: false,
-        bucketNotFound: true,
-        lastError: handled.detail,
-      };
-    }
-    const pubResp = await fetch(
-      `${cfg.url}/storage/v1/object/public/${encodeURIComponent(cfg.bucket)}/__health_probe__.txt`
-    );
-    const pubText = await pubResp.text();
-    const pubMissing = isBucketNotFoundError(pubText);
-    if (!pubMissing) {
-      cachedBucketStatus = { exists: true, checkedAt: now };
-      return { exists: true, bucketNotFound: false, resolvedBucket: cfg.bucket };
-    }
-    const pubHandled = handleSupabaseStorageBucketError(pubText, 'Media Upload Preflight');
-    cachedBucketStatus = { exists: false, checkedAt: now, lastError: pubHandled.rawMessage };
+    const finalErrorSource = handled.isBucketNotFound ? handled : handleSupabaseStorageBucketError(pubText, 'Media Upload Preflight');
+    cachedBucketStatus = { exists: false, checkedAt: now, lastError: finalErrorSource.rawMessage };
     return {
       exists: false,
-      bucketNotFound: pubHandled.isBucketNotFound,
-      lastError: pubHandled.detail,
+      bucketNotFound: true,
+      lastError: finalErrorSource.detail,
     };
   } catch (err) {
     const handled = handleSupabaseStorageBucketError(err, 'Media Upload Preflight');

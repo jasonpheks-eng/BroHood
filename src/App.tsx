@@ -90,8 +90,8 @@ const DEFAULT_SETTINGS: Settings = {
   brandName: 'BROTHERHOOD',
   logoUrl: '/assets/aistudio/BRO_5917966d.png',
   heroImageUrl: '',
-  heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
-  heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+  heroVideoUrl: '',
+  heroVideoUrls: [],
   featuredImageUrl: '',
   editorialImageUrl: '',
   footerImageUrl: '',
@@ -124,6 +124,7 @@ const DEFAULT_SETTINGS: Settings = {
 };
 
 const HERO_PLAYLIST_CACHE_KEY = 'brotherhood_hero_playlist_v1';
+const CUSTOM_HERO_FLAG_KEY = 'brotherhood_has_custom_hero_v1';
 
 interface CachedHeroPlaylist {
   heroVideoUrls: string[];
@@ -132,13 +133,53 @@ interface CachedHeroPlaylist {
   explicitDefaultReset?: boolean;
 }
 
+const DEFAULT_HERO_LOOP_PATH = '/assets/aistudio/brotherhood_hero_loop.mp4';
+
+function isCustomHeroMediaUrl(url?: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = normalizeMediaUrlInput(url);
+  return Boolean(trimmed && trimmed !== DEFAULT_HERO_LOOP_PATH);
+}
+
+function readHasAdminCustomHeroFlag(): boolean {
+  try {
+    return localStorage.getItem(CUSTOM_HERO_FLAG_KEY) === 'true';
+  } catch {
+    return false;
+  }
+}
+
+function writeHasAdminCustomHeroFlag(hasCustom: boolean): void {
+  try {
+    if (hasCustom) {
+      localStorage.setItem(CUSTOM_HERO_FLAG_KEY, 'true');
+    } else {
+      localStorage.removeItem(CUSTOM_HERO_FLAG_KEY);
+    }
+  } catch {
+    // Ignore storage errors
+  }
+}
+
 function readCachedHeroPlaylist(): CachedHeroPlaylist | null {
   try {
     const raw = localStorage.getItem(HERO_PLAYLIST_CACHE_KEY);
     if (!raw) return null;
     const parsed = JSON.parse(raw) as CachedHeroPlaylist;
-    if (Array.isArray(parsed?.heroVideoUrls) && parsed.heroVideoUrls.length > 0) {
-      return parsed;
+    if (Array.isArray(parsed?.heroVideoUrls)) {
+      const customUrls = parsed.heroVideoUrls.filter((u) => isCustomHeroMediaUrl(u));
+      if (customUrls.length > 0) {
+        return {
+          ...parsed,
+          heroVideoUrls: customUrls,
+          heroVideoUrl: customUrls[0],
+          explicitDefaultReset: false,
+        };
+      }
+      if (parsed.explicitDefaultReset && !readHasAdminCustomHeroFlag()) {
+        return parsed;
+      }
+      return null;
     }
   } catch {
     // Ignore storage read errors
@@ -153,13 +194,42 @@ function writeCachedHeroPlaylist(
 ) {
   try {
     const cleanUrls = (urls || []).filter((u) => Boolean(u && u.trim()));
-    const primary = cleanUrls[0] || (singleUrl && singleUrl.trim()) || DEFAULT_SETTINGS.heroVideoUrl!;
-    const finalUrls = cleanUrls.length > 0 ? cleanUrls : [primary];
+    const customUrls = cleanUrls.filter((u) => isCustomHeroMediaUrl(u));
+    const singleCustom = isCustomHeroMediaUrl(singleUrl) ? normalizeMediaUrlInput(singleUrl) : '';
+
+    if (customUrls.length > 0 || singleCustom) {
+      const finalCustom = customUrls.length > 0 ? customUrls : [singleCustom];
+      writeHasAdminCustomHeroFlag(true);
+      const payload: CachedHeroPlaylist = {
+        heroVideoUrls: finalCustom,
+        heroVideoUrl: finalCustom[0],
+        updatedAt: Date.now(),
+        explicitDefaultReset: false,
+      };
+      localStorage.setItem(HERO_PLAYLIST_CACHE_KEY, JSON.stringify(payload));
+      return;
+    }
+
+    if (explicitDefaultReset) {
+      writeHasAdminCustomHeroFlag(false);
+      const primary = cleanUrls[0] || (singleUrl && singleUrl.trim()) || DEFAULT_HERO_LOOP_PATH;
+      const finalUrls = cleanUrls.length > 0 ? cleanUrls : [primary];
+      const payload: CachedHeroPlaylist = {
+        heroVideoUrls: finalUrls,
+        heroVideoUrl: finalUrls[0],
+        updatedAt: Date.now(),
+        explicitDefaultReset: true,
+      };
+      localStorage.setItem(HERO_PLAYLIST_CACHE_KEY, JSON.stringify(payload));
+      return;
+    }
+
+    // Never persist unrequested default loop into cache
     const payload: CachedHeroPlaylist = {
-      heroVideoUrls: finalUrls,
-      heroVideoUrl: finalUrls[0],
+      heroVideoUrls: [],
+      heroVideoUrl: '',
       updatedAt: Date.now(),
-      explicitDefaultReset,
+      explicitDefaultReset: false,
     };
     localStorage.setItem(HERO_PLAYLIST_CACHE_KEY, JSON.stringify(payload));
   } catch {
@@ -325,6 +395,7 @@ export default function App() {
   const [isAdminLoginOpen, setIsAdminLoginOpen] = useState(false);
   const handledProductDeepLinkRef = React.useRef(false);
   const latestSettingsTsRef = React.useRef<number>(0);
+  const sessionSavedTsRef = React.useRef<number>(0);
 
   // Open Product Detail modal automatically if ?product=<id> link is visited (e.g. from WhatsApp order)
   useEffect(() => {
@@ -373,32 +444,36 @@ export default function App() {
 
     window.addEventListener('hashchange', handleHash);
 
-    // Verify Firestore Connection
-    const testConnection = async () => {
-      try {
-        await getDocFromServer(doc(db, 'settings', 'global'));
-      } catch (e) {
-        if (e instanceof Error && e.message.includes('the client is offline')) {
-          console.error('Please check your Firebase configuration.');
-        } else {
-          console.error('Firestore connectivity check:', e);
-        }
-      }
-    };
-    testConnection();
-
     let unsubProductsFallback: (() => void) | undefined;
     let unsubCreatorsFallback: (() => void) | undefined;
     let latestFirestoreSettingsTs = 0;
     let latestSupabaseSettingsTs = 0;
-    let hasBackfilledSettings = false;
     let hasBackfilledProducts = false;
     let hasBackfilledCreators = false;
-    const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+    let productsReady = false;
+    let settingsReady = false;
+    const defaultHero = DEFAULT_HERO_LOOP_PATH;
+    const hasCustomHeroRef = {
+      current: readHasAdminCustomHeroFlag() || Boolean(readCachedHeroPlaylist()?.heroVideoUrls.some(isCustomHeroMediaUrl)),
+    };
+
+    const markProductsReady = () => {
+      productsReady = true;
+      if (settingsReady) setLoading(false);
+    };
+
+    const markSettingsReady = () => {
+      settingsReady = true;
+      if (productsReady) setLoading(false);
+    };
+
+    const loadingTimeoutId = setTimeout(() => {
+      setLoading(false);
+    }, 2500);
 
     const applySupabaseSettings = (incoming: Settings) => {
       const incomingTs = Number(incoming.settingsUpdatedAt) || 0;
-      const newestKnownTs = Math.max(latestFirestoreSettingsTs, latestSettingsTsRef.current);
+      const newestKnownTs = Math.max(latestFirestoreSettingsTs, sessionSavedTsRef.current);
       if (newestKnownTs > 0 && (incomingTs === 0 || newestKnownTs > incomingTs + 500)) {
         return;
       }
@@ -409,13 +484,37 @@ export default function App() {
         latestSettingsTsRef.current = incomingTs;
       }
 
+      const explicitReset = incoming.heroExplicitDefaultReset === true;
       const cleanedRawUrls = Array.isArray(incoming.heroVideoUrls)
         ? normalizeHeroMediaList(incoming.heroVideoUrls)
         : [];
       const customOnlyUrls = cleanedRawUrls.filter((u) => u !== defaultHero);
-      const cleanedHeroUrls = customOnlyUrls.length > 0 ? customOnlyUrls : cleanedRawUrls;
-      const cleanedSingleHero = incoming.heroVideoUrl
+      const rawSingleHero = incoming.heroVideoUrl
         ? normalizeMediaUrlInput(incoming.heroVideoUrl)
+        : '';
+      const customSingleHero = isCustomHeroMediaUrl(rawSingleHero) ? rawSingleHero : '';
+
+      const hasIncomingCustom = customOnlyUrls.length > 0 || Boolean(customSingleHero);
+      if (hasIncomingCustom) {
+        hasCustomHeroRef.current = true;
+        writeHasAdminCustomHeroFlag(true);
+      } else if (explicitReset) {
+        hasCustomHeroRef.current = false;
+        writeHasAdminCustomHeroFlag(false);
+      }
+
+      // If admin has uploaded custom hero media and no Reset to Default action was triggered,
+      // ignore the default loop path entirely.
+      const cleanedHeroUrls =
+        customOnlyUrls.length > 0
+          ? customOnlyUrls
+          : explicitReset && !hasCustomHeroRef.current
+          ? cleanedRawUrls
+          : [];
+      const cleanedSingleHero = customSingleHero
+        ? customSingleHero
+        : explicitReset && !hasCustomHeroRef.current
+        ? rawSingleHero
         : '';
 
       const finalHeroUrls =
@@ -426,25 +525,58 @@ export default function App() {
           : undefined;
       const finalHeroUrl = finalHeroUrls?.[0] || cleanedSingleHero || undefined;
 
-      // Never let an older/default-only Supabase snapshot overwrite an already customized local/Firestore playlist unless it carries a strictly newer timestamp
       setSettings((prev) => {
-        const prevHasCustom = (prev.heroVideoUrls || []).some((u) => u && u !== defaultHero);
-        const incomingIsOnlyDefault =
-          (!finalHeroUrls || (finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero));
-        if (prevHasCustom && incomingIsOnlyDefault && incomingTs <= latestSettingsTsRef.current) {
-          return prev;
+        const prevCustomUrls = (prev.heroVideoUrls || []).filter(isCustomHeroMediaUrl);
+        const prevHasCustom = prevCustomUrls.length > 0 || isCustomHeroMediaUrl(prev.heroVideoUrl);
+        const incomingIsDefaultPath =
+          cleanedRawUrls.includes(defaultHero) || rawSingleHero === defaultHero;
+
+        if ((prevHasCustom || hasCustomHeroRef.current) && !explicitReset) {
+          const preservedUrls =
+            customOnlyUrls.length > 0
+              ? customOnlyUrls
+              : customSingleHero
+              ? [customSingleHero]
+              : prevCustomUrls.length > 0
+              ? prevCustomUrls
+              : prev.heroVideoUrls || [];
+          const preservedUrl = preservedUrls[0] || prev.heroVideoUrl || '';
+
+          if (preservedUrls.some(isCustomHeroMediaUrl) || incomingIsDefaultPath) {
+            writeCachedHeroPlaylist(preservedUrls, preservedUrl, false);
+            return {
+              ...prev,
+              ...incoming,
+              heroVideoUrls: preservedUrls,
+              heroVideoUrl: preservedUrl,
+              heroExplicitDefaultReset: false,
+              whatsappNumber:
+                incoming.whatsappNumber !== undefined
+                  ? incoming.whatsappNumber
+                  : prev.whatsappNumber || '',
+            };
+          }
         }
 
         if (finalHeroUrls && finalHeroUrls.length > 0) {
-          const isDefaultOnly = finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
+          const isDefaultOnly =
+            explicitReset && finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
           writeCachedHeroPlaylist(finalHeroUrls, finalHeroUrl, isDefaultOnly);
         }
+
+        const safeUrls = finalHeroUrls ?? prevCustomUrls;
+        const safeUrl =
+          finalHeroUrl !== undefined
+            ? finalHeroUrl
+            : safeUrls[0] || (isCustomHeroMediaUrl(prev.heroVideoUrl) ? prev.heroVideoUrl : '');
 
         return {
           ...prev,
           ...incoming,
-          ...(finalHeroUrls ? { heroVideoUrls: finalHeroUrls } : {}),
-          ...(finalHeroUrl !== undefined ? { heroVideoUrl: finalHeroUrl } : {}),
+          heroVideoUrls: safeUrls,
+          heroVideoUrl: safeUrl,
+          heroExplicitDefaultReset:
+            explicitReset && safeUrls.includes(defaultHero) && !safeUrls.some(isCustomHeroMediaUrl),
           whatsappNumber:
             incoming.whatsappNumber !== undefined
               ? incoming.whatsappNumber
@@ -470,25 +602,24 @@ export default function App() {
       } catch {}
     };
 
-    // Listen to Settings
-    const unsubSettings = onSnapshot(
-      doc(db, 'settings', 'global'),
-      (snap) => {
-        if (snap.exists()) {
-          const data = snap.data() as any;
-          const firestoreTs = Number(data.settingsUpdatedAt) || 0;
-          const newestKnownTs = Math.max(latestSupabaseSettingsTs, latestSettingsTsRef.current);
-          if (newestKnownTs > 0 && (firestoreTs === 0 || newestKnownTs > firestoreTs + 500)) {
-            return;
-          }
-          if (firestoreTs > latestFirestoreSettingsTs) {
-            latestFirestoreSettingsTs = firestoreTs;
-          }
-          if (firestoreTs > latestSettingsTsRef.current) {
-            latestSettingsTsRef.current = firestoreTs;
-          }
+    const applyFirestoreGlobalData = (data: any, isFromCache = false) => {
+      const firestoreTs = Number(data.settingsUpdatedAt) || 0;
+      const newestKnownTs = Math.max(latestSupabaseSettingsTs, sessionSavedTsRef.current);
+      if (isFromCache && newestKnownTs > 0 && firestoreTs < newestKnownTs) {
+        return;
+      }
+      if (newestKnownTs > 0 && firestoreTs > 0 && newestKnownTs > firestoreTs + 1500) {
+        return;
+      }
+      if (firestoreTs > latestFirestoreSettingsTs) {
+        latestFirestoreSettingsTs = firestoreTs;
+      }
+      if (firestoreTs > latestSettingsTsRef.current) {
+        latestSettingsTsRef.current = firestoreTs;
+      }
 
-          const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
+      const explicitReset = data.heroExplicitDefaultReset === true;
+      const heroUrls = Array.isArray(data.heroVideoUrls) ? data.heroVideoUrls : [];
           const normalizedHeroUrls = normalizeHeroMediaList(
             heroUrls.filter(
               (u: unknown): u is string =>
@@ -499,8 +630,6 @@ export default function App() {
             )
           );
           const customOnlyFirestore = normalizedHeroUrls.filter((u) => u !== defaultHero);
-          const cleanedHeroUrls =
-            customOnlyFirestore.length > 0 ? customOnlyFirestore : normalizedHeroUrls;
           const rawSingleHero =
             typeof data.heroVideoUrl === 'string' &&
             data.heroVideoUrl.trim().length > 0 &&
@@ -508,46 +637,67 @@ export default function App() {
             !data.heroVideoUrl.includes('Scene-7')
               ? normalizeMediaUrlInput(data.heroVideoUrl)
               : '';
-          const validSingleHeroUrl =
-            customOnlyFirestore.length > 0 && rawSingleHero === defaultHero
-              ? customOnlyFirestore[0]
-              : rawSingleHero;
+          const customSingleHero = isCustomHeroMediaUrl(rawSingleHero) ? rawSingleHero : '';
+
+          const hasFirestoreCustom = customOnlyFirestore.length > 0 || Boolean(customSingleHero);
+          if (hasFirestoreCustom) {
+            hasCustomHeroRef.current = true;
+            writeHasAdminCustomHeroFlag(true);
+          } else if (explicitReset) {
+            hasCustomHeroRef.current = false;
+            writeHasAdminCustomHeroFlag(false);
+          }
+
+          // Ignore the default loop path completely unless an explicit Reset to Default action was triggered
+          const cleanedHeroUrls =
+            customOnlyFirestore.length > 0
+              ? customOnlyFirestore
+              : explicitReset && !hasCustomHeroRef.current
+              ? normalizedHeroUrls
+              : [];
+          const validSingleHeroUrl = customSingleHero
+            ? customSingleHero
+            : explicitReset && !hasCustomHeroRef.current
+            ? rawSingleHero
+            : '';
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
           if (cleanedHeroUrls.length === 0 && !validSingleHeroUrl) {
             const cachedHero = readCachedHeroPlaylist();
-            if (
-              cachedHero &&
-              !cachedHero.explicitDefaultReset &&
-              cachedHero.heroVideoUrls.some((u) => u && u !== defaultHero)
+            const cachedCustomUrls = (cachedHero?.heroVideoUrls || []).filter(isCustomHeroMediaUrl);
+            if (cachedCustomUrls.length > 0) {
+              merged.heroVideoUrls = cachedCustomUrls;
+              merged.heroVideoUrl = cachedCustomUrls[0];
+              merged.heroExplicitDefaultReset = false;
+            } else if (
+              explicitReset &&
+              !hasCustomHeroRef.current &&
+              cachedHero?.explicitDefaultReset &&
+              cachedHero.heroVideoUrls.length > 0
             ) {
               merged.heroVideoUrls = cachedHero.heroVideoUrls;
               merged.heroVideoUrl = cachedHero.heroVideoUrl;
             } else {
-              const patch: Record<string, unknown> = {
-                heroVideoUrl: defaultHero,
-                heroVideoUrls: [defaultHero],
-              };
-              merged.heroVideoUrl = defaultHero;
-              merged.heroVideoUrls = [defaultHero];
-              setDoc(doc(db, 'settings', 'global'), patch, { merge: true }).catch(() => {});
+              merged.heroVideoUrl = '';
+              merged.heroVideoUrls = [];
+              writeCachedHeroPlaylist([], '', false);
             }
           } else if (cleanedHeroUrls.length > 0) {
             const isFirestoreOnlyDefault =
-              cleanedHeroUrls.length === 1 && cleanedHeroUrls[0] === defaultHero;
+              explicitReset &&
+              cleanedHeroUrls.length === 1 &&
+              cleanedHeroUrls[0] === defaultHero;
             const cachedHero = readCachedHeroPlaylist();
-            const hasRecentLocalCustom =
-              Boolean(cachedHero) &&
-              !cachedHero!.explicitDefaultReset &&
-              Date.now() - cachedHero!.updatedAt < 20000 &&
-              cachedHero!.heroVideoUrls.some((u) => u && u !== defaultHero);
+            const cachedCustomUrls = (cachedHero?.heroVideoUrls || []).filter(isCustomHeroMediaUrl);
 
-            if (isFirestoreOnlyDefault && hasRecentLocalCustom) {
-              merged.heroVideoUrls = cachedHero!.heroVideoUrls;
-              merged.heroVideoUrl = cachedHero!.heroVideoUrl;
+            if (isFirestoreOnlyDefault && (hasCustomHeroRef.current || cachedCustomUrls.length > 0)) {
+              merged.heroVideoUrls = cachedCustomUrls;
+              merged.heroVideoUrl = cachedCustomUrls[0] || '';
+              merged.heroExplicitDefaultReset = false;
             } else {
               merged.heroVideoUrls = cleanedHeroUrls;
               merged.heroVideoUrl = validSingleHeroUrl || cleanedHeroUrls[0];
+              merged.heroExplicitDefaultReset = isFirestoreOnlyDefault;
               writeCachedHeroPlaylist(
                 merged.heroVideoUrls,
                 merged.heroVideoUrl,
@@ -555,15 +705,20 @@ export default function App() {
               );
             }
           } else if (validSingleHeroUrl) {
+            const isDefaultSingle = explicitReset && validSingleHeroUrl === defaultHero;
             merged.heroVideoUrls = [validSingleHeroUrl];
             merged.heroVideoUrl = validSingleHeroUrl;
+            merged.heroExplicitDefaultReset = isDefaultSingle;
             writeCachedHeroPlaylist(
               merged.heroVideoUrls,
               merged.heroVideoUrl,
-              validSingleHeroUrl === defaultHero
+              isDefaultSingle
             );
           }
           setSettings(merged);
+          if (!isFromCache) {
+            markSettingsReady();
+          }
           if (merged.supabaseUrl || merged.supabaseAnonKey || merged.supabaseBucket) {
             updateSupabaseConfig({
               url: merged.supabaseUrl,
@@ -571,20 +726,50 @@ export default function App() {
               bucket: merged.supabaseBucket,
             });
           }
-          try {
-            if (merged.whatsappNumber) {
+          if (merged.whatsappNumber) {
+            try {
               localStorage.setItem('brotherhood_whatsapp_number', merged.whatsappNumber);
-            } else {
+            } catch {}
+          } else {
+            try {
               localStorage.removeItem('brotherhood_whatsapp_number');
-            }
-          } catch {}
+            } catch {}
+          }
+    };
+
+    // Fetch master settings directly from Firestore server on initial boot so cached defaults never flash
+    getDocFromServer(doc(db, 'settings', 'global'))
+      .then((snap) => {
+        if (snap.exists()) {
+          applyFirestoreGlobalData(snap.data(), false);
+        } else {
+          markSettingsReady();
+        }
+      })
+      .catch((e) => {
+        if (e instanceof Error && e.message.includes('the client is offline')) {
+          console.error('Please check your Firebase configuration.');
+        }
+        markSettingsReady();
+      });
+
+    // Listen to Settings (Admin master source of truth across all devices)
+    const unsubSettings = onSnapshot(
+      doc(db, 'settings', 'global'),
+      (snap) => {
+        if (snap.exists()) {
+          applyFirestoreGlobalData(snap.data(), snap.metadata.fromCache);
         } else {
           setDoc(doc(db, 'settings', 'global'), DEFAULT_SETTINGS).catch((error) =>
             handleFirestoreError(error, OperationType.WRITE, 'settings/global')
           );
+          if (!snap.metadata.fromCache) {
+            markSettingsReady();
+          }
         }
       },
       (error) => {
+        markSettingsReady();
         handleFirestoreError(error, OperationType.GET, 'settings/global');
       }
     );
@@ -613,7 +798,7 @@ export default function App() {
         } else {
           setProducts(loaded);
         }
-        setLoading(false);
+        markProductsReady();
       },
       (err) => {
         console.warn('Ordered products query failed, falling back:', err);
@@ -622,10 +807,10 @@ export default function App() {
           (snap) => {
             const loaded = snap.docs.map((d) => ({ id: d.id, ...d.data() } as Product));
             setProducts(loaded);
-            setLoading(false);
+            markProductsReady();
           },
           (fallbackErr) => {
-            setLoading(false);
+            markProductsReady();
             handleFirestoreError(fallbackErr, OperationType.LIST, 'products');
           }
         );
@@ -701,15 +886,24 @@ export default function App() {
 
       if (supa.settings) {
         applySupabaseSettings(supa.settings);
-      } else if (!hasBackfilledSettings) {
-        hasBackfilledSettings = true;
-        setSettings((current) => {
-          syncSettingsToSupabase(current).catch(() => {});
-          return current;
-        });
       }
     };
     void hydrateFromSupabase();
+
+    const refreshMasterSettingsFromServer = () => {
+      if (typeof document !== 'undefined' && document.visibilityState === 'hidden') return;
+      getDocFromServer(doc(db, 'settings', 'global'))
+        .then((snap) => {
+          if (snap.exists()) {
+            applyFirestoreGlobalData(snap.data(), false);
+          }
+        })
+        .catch(() => {});
+    };
+
+    window.addEventListener('focus', refreshMasterSettingsFromServer);
+    window.addEventListener('online', refreshMasterSettingsFromServer);
+    document.addEventListener('visibilitychange', refreshMasterSettingsFromServer);
 
     // Real-time Supabase synchronization across all connected devices (Broadcast + postgres_changes)
     const unsubSupabaseRealtime = subscribeToSupabaseRealtime({
@@ -725,11 +919,16 @@ export default function App() {
       },
       onReconnected: () => {
         void hydrateFromSupabase();
+        refreshMasterSettingsFromServer();
       },
     });
 
     return () => {
+      clearTimeout(loadingTimeoutId);
       window.removeEventListener('hashchange', handleHash);
+      window.removeEventListener('focus', refreshMasterSettingsFromServer);
+      window.removeEventListener('online', refreshMasterSettingsFromServer);
+      document.removeEventListener('visibilitychange', refreshMasterSettingsFromServer);
       unsubSettings();
       unsubProducts();
       if (unsubProductsFallback) unsubProductsFallback();
@@ -834,12 +1033,14 @@ export default function App() {
     const { studioGallery: nextGallery, ...settingsWithoutGallery } = stripUndefined(newSettings);
     const savedAt = Date.now();
     latestSettingsTsRef.current = savedAt;
+    sessionSavedTsRef.current = savedAt;
     const cleanSettings = {
       ...(settingsWithoutGallery as Settings),
       settingsUpdatedAt: savedAt,
     };
 
-    const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+    const defaultHero = DEFAULT_HERO_LOOP_PATH;
+    const explicitDefaultResetRequested = cleanSettings.heroExplicitDefaultReset === true;
     const rawHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
       ? normalizeHeroMediaList(cleanSettings.heroVideoUrls)
       : cleanSettings.heroVideoUrl
@@ -848,15 +1049,26 @@ export default function App() {
     const nextHeroUrls = rawHeroUrls
       ? (() => {
           const customOnly = rawHeroUrls.filter((u) => u !== defaultHero);
-          return customOnly.length > 0 ? customOnly : rawHeroUrls;
+          if (customOnly.length > 0) return customOnly;
+          return explicitDefaultResetRequested ? rawHeroUrls : [];
         })()
       : undefined;
     if (nextHeroUrls) {
+      const hasCustomSaved = nextHeroUrls.some(isCustomHeroMediaUrl);
+      const isExplicitResetNow =
+        explicitDefaultResetRequested && !hasCustomSaved && nextHeroUrls.includes(defaultHero);
       cleanSettings.heroVideoUrls = nextHeroUrls;
-      cleanSettings.heroVideoUrl = nextHeroUrls[0] || normalizeMediaUrlInput(cleanSettings.heroVideoUrl);
-      const explicitDefaultReset =
-        nextHeroUrls.length === 1 && nextHeroUrls[0] === defaultHero;
-      writeCachedHeroPlaylist(nextHeroUrls, cleanSettings.heroVideoUrl, explicitDefaultReset);
+      cleanSettings.heroVideoUrl =
+        nextHeroUrls[0] ||
+        (isExplicitResetNow ? normalizeMediaUrlInput(cleanSettings.heroVideoUrl) : '') ||
+        '';
+      cleanSettings.heroExplicitDefaultReset = isExplicitResetNow;
+      if (hasCustomSaved) {
+        writeHasAdminCustomHeroFlag(true);
+      } else if (isExplicitResetNow) {
+        writeHasAdminCustomHeroFlag(false);
+      }
+      writeCachedHeroPlaylist(nextHeroUrls, cleanSettings.heroVideoUrl, isExplicitResetNow);
     }
 
     setSettings((prev) => ({
@@ -909,6 +1121,7 @@ export default function App() {
     const cleanNumber = rawNumber.trim();
     const updatedAt = Date.now();
     latestSettingsTsRef.current = updatedAt;
+    sessionSavedTsRef.current = updatedAt;
     const updatedSettings: Settings = {
       ...settings,
       whatsappNumber: cleanNumber,
@@ -947,6 +1160,7 @@ export default function App() {
     });
     const updatedAt = Date.now();
     latestSettingsTsRef.current = updatedAt;
+    sessionSavedTsRef.current = updatedAt;
     const normalizedPayload = {
       supabaseUrl: updatedCfg.url,
       supabaseAnonKey: updatedCfg.anonKey,
