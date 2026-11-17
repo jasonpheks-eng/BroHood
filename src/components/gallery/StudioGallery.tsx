@@ -64,6 +64,43 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
     items = [],
   } = state;
 
+  const gridRef = React.useRef<HTMLDivElement | null>(null);
+  const [visibleTiles, setVisibleTiles] = React.useState<Record<string, boolean>>({});
+  const [activeTileId, setActiveTileId] = React.useState<string | null>(null);
+
+  // Trigger entrance text animations when each tile scrolls into mobile/desktop viewport
+  React.useEffect(() => {
+    const container = gridRef.current;
+    if (!container || typeof IntersectionObserver === 'undefined') {
+      const allVisible: Record<string, boolean> = {};
+      items.forEach((it) => {
+        allVisible[it.id] = true;
+      });
+      setVisibleTiles(allVisible);
+      return;
+    }
+
+    const observer = new IntersectionObserver(
+      (entries) => {
+        entries.forEach((entry) => {
+          if (entry.isIntersecting) {
+            const tileId = entry.target.getAttribute('data-tile-id');
+            if (tileId) {
+              setVisibleTiles((prev) => (prev[tileId] ? prev : { ...prev, [tileId]: true }));
+              observer.unobserve(entry.target);
+            }
+          }
+        });
+      },
+      { threshold: 0.15, rootMargin: '0px 0px -24px 0px' }
+    );
+
+    const tiles = container.querySelectorAll('article[data-tile-id]');
+    tiles.forEach((el) => observer.observe(el));
+
+    return () => observer.disconnect();
+  }, [items, layoutMode]);
+
   const gridClass = React.useMemo(() => {
     switch (layoutMode) {
       case 'compact':
@@ -139,7 +176,7 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
             </p>
           </div>
         ) : (
-          <div className={cn('grid', gridClass)}>
+          <div ref={gridRef} className={cn('grid', gridClass)}>
             {items.map((item) => {
               const spanClass =
                 layoutMode === 'compact' || layoutMode === 'large'
@@ -164,17 +201,21 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
               const isMinimal = layoutMode === 'minimal';
               const hasMedia = Boolean(item.image && item.image.trim().length > 0);
               const isVideo = inferMediaType(item.image, item.mediaType) === 'video';
+              const isTileVisible = Boolean(visibleTiles[item.id]);
+              const isActive = activeTileId === item.id;
 
               const headingStyleClass =
                 titleLayout === 'editorial-serif'
-                  ? 'text-lg sm:text-2xl md:text-4xl font-serif italic font-semibold tracking-tight leading-none text-balance'
-                  : 'text-base sm:text-2xl md:text-4xl font-extrabold uppercase tracking-tight leading-none font-sans text-balance';
+                  ? 'text-base sm:text-2xl md:text-4xl font-serif italic font-semibold tracking-tight leading-[1.08] sm:leading-none text-balance'
+                  : 'text-sm sm:text-2xl md:text-4xl font-extrabold uppercase tracking-tight leading-[1.08] sm:leading-none font-sans text-balance';
 
               return (
                 <article
                   key={item.id}
+                  data-tile-id={item.id}
+                  onClick={() => setActiveTileId((prev) => (prev === item.id ? null : item.id))}
                   className={cn(
-                    'group relative overflow-hidden rounded-none bg-[#1e191c] border border-white/10 select-none',
+                    'group relative overflow-hidden rounded-none bg-[#1e191c] border border-white/10 select-none cursor-pointer touch-manipulation',
                     spanClass
                   )}
                 >
@@ -188,13 +229,19 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
                         muted
                         playsInline
                         aria-label={item.title || 'Studio campaign video'}
-                        className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                        className={cn(
+                          'absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105',
+                          isActive && 'scale-105'
+                        )}
                       />
                     ) : (
                       <ResolvedImage
                         src={item.image}
                         alt={item.title || 'Studio look'}
-                        className="absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105"
+                        className={cn(
+                          'absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105',
+                          isActive && 'scale-105'
+                        )}
                       />
                     )
                   ) : (
@@ -206,48 +253,73 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
                     </div>
                   )}
 
-                  {/* Contrast Scrim */}
+                  {/* Contrast Scrim — always visible on mobile touchscreens so text stays legible without hover */}
                   <div
                     className={cn(
                       'absolute inset-0 pointer-events-none transition-opacity duration-300',
-                      isMinimal ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'
+                      isMinimal
+                        ? isActive
+                          ? 'opacity-100'
+                          : 'opacity-85 md:opacity-0 md:group-hover:opacity-100 [@media(hover:none)]:opacity-85'
+                        : 'opacity-100'
                     )}
                     style={{
                       background: isCentered
-                        ? 'radial-gradient(circle at center, var(--gallery-scrim) 0%, rgba(20,17,19,0.35) 70%)'
+                        ? 'radial-gradient(circle at center, var(--gallery-scrim) 0%, rgba(20,17,19,0.42) 72%)'
                         : isTopAligned
-                        ? 'linear-gradient(to bottom, var(--gallery-scrim) 0%, transparent 72%)'
-                        : 'linear-gradient(to top, var(--gallery-scrim) 0%, transparent 72%)',
+                        ? 'linear-gradient(to bottom, var(--gallery-scrim) 0%, transparent 78%)'
+                        : 'linear-gradient(to top, var(--gallery-scrim) 0%, transparent 78%)',
                     }}
                   />
 
-                  {/* Overlapping Editorial Typography */}
+                  {/* Overlapping Editorial Typography — optimized for mobile touch & viewport motion */}
                   <div
                     className={cn(
-                      'relative z-10 h-full w-full p-4 sm:p-6 flex flex-col transition-all duration-300',
+                      'relative z-10 h-full w-full p-3 sm:p-6 flex flex-col transition-all duration-300 ease-out',
                       effectivePosClass,
-                      isMinimal ? 'opacity-0 group-hover:opacity-100' : 'opacity-100'
+                      isMinimal
+                        ? isActive
+                          ? 'opacity-100'
+                          : 'opacity-100 md:opacity-0 md:group-hover:opacity-100 [@media(hover:none)]:opacity-100'
+                        : 'opacity-100',
+                      !isTileVisible && textAnimation === 'fadeUp' ? 'opacity-0 translate-y-3' : ''
                     )}
                   >
                     <div
                       key={`${item.id}-${textAnimation}-${titleLayout}`}
-                      className={cn('w-full overflow-hidden', animClass)}
+                      className={cn(
+                        'w-full transition-transform duration-300 ease-out group-hover:-translate-y-0.5',
+                        effectivePosClass.includes('items-center')
+                          ? 'origin-center'
+                          : effectivePosClass.includes('items-end')
+                          ? 'origin-right'
+                          : 'origin-left',
+                        textAnimation === 'marquee' ? 'overflow-hidden' : 'overflow-visible',
+                        isActive && '-translate-y-0.5 scale-[1.03]',
+                        isTileVisible ? animClass : ''
+                      )}
                     >
                       {item.subtitle && (
                         <p
                           style={{ color: 'var(--gallery-accent)' }}
-                          className="text-[10px] sm:text-xs font-bold uppercase tracking-[0.3em] mb-1.5 truncate"
+                          className="text-[9px] sm:text-xs font-bold uppercase tracking-[0.2em] sm:tracking-[0.3em] mb-1 sm:mb-1.5 truncate [text-shadow:0_1px_8px_rgba(0,0,0,0.45)]"
                         >
                           {item.subtitle}
                         </p>
                       )}
 
                       {item.title && (
-                        <h3 className={cn(headingStyleClass, textAnimation === 'marquee' && 'overflow-hidden w-full')}>
+                        <h3
+                          className={cn(
+                            headingStyleClass,
+                            '[text-shadow:0_2px_12px_rgba(0,0,0,0.5)]',
+                            textAnimation === 'marquee' && 'overflow-hidden w-full'
+                          )}
+                        >
                           {textAnimation === 'marquee' ? (
-                            <span className="marquee-fast gap-8">
-                              <span className="whitespace-nowrap pr-8">{item.title}</span>
-                              <span aria-hidden="true" className="whitespace-nowrap pr-8">
+                            <span className="marquee-fast gap-6 sm:gap-8">
+                              <span className="whitespace-nowrap pr-6 sm:pr-8">{item.title}</span>
+                              <span aria-hidden="true" className="whitespace-nowrap pr-6 sm:pr-8">
                                 {item.title}
                               </span>
                             </span>

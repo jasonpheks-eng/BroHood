@@ -165,7 +165,14 @@
   animation: brotherhood-hero-breathe 6s ease-in-out infinite;
 }
 
-/* Suppress native iOS/Safari/Chrome play button overlays on ambient autoplay videos */
+/* Suppress native iOS/Safari/Chrome/Firefox play button overlays on ambient autoplay videos */
+video.autoplay-video,
+#hero-banner-media video {
+  pointer-events: none !important;
+  -webkit-touch-callout: none !important;
+  user-select: none !important;
+}
+
 video.autoplay-video::-webkit-media-controls,
 video.autoplay-video::-webkit-media-controls-enclosure,
 video.autoplay-video::-webkit-media-controls-overlay-enclosure,
@@ -173,6 +180,12 @@ video.autoplay-video::-webkit-media-controls-panel,
 video.autoplay-video::-webkit-media-controls-play-button,
 video.autoplay-video::-webkit-media-controls-start-playback-button,
 video.autoplay-video::-webkit-media-controls-overlay-play-button,
+video.autoplay-video::-webkit-media-controls-timeline,
+video.autoplay-video::-webkit-media-controls-current-time-display,
+video.autoplay-video::-webkit-media-controls-time-remaining-display,
+video.autoplay-video::-webkit-media-controls-mute-button,
+video.autoplay-video::-webkit-media-controls-volume-slider,
+video.autoplay-video::-webkit-media-controls-fullscreen-button,
 video.autoplay-video::-internal-media-controls-overlay-cast-button,
 #hero-banner-media video::-webkit-media-controls,
 #hero-banner-media video::-webkit-media-controls-enclosure,
@@ -180,7 +193,13 @@ video.autoplay-video::-internal-media-controls-overlay-cast-button,
 #hero-banner-media video::-webkit-media-controls-panel,
 #hero-banner-media video::-webkit-media-controls-play-button,
 #hero-banner-media video::-webkit-media-controls-start-playback-button,
-#hero-banner-media video::-webkit-media-controls-overlay-play-button {
+#hero-banner-media video::-webkit-media-controls-overlay-play-button,
+#hero-banner-media video::-webkit-media-controls-timeline,
+#hero-banner-media video::-webkit-media-controls-current-time-display,
+#hero-banner-media video::-webkit-media-controls-time-remaining-display,
+#hero-banner-media video::-webkit-media-controls-mute-button,
+#hero-banner-media video::-webkit-media-controls-volume-slider,
+#hero-banner-media video::-webkit-media-controls-fullscreen-button {
   display: none !important;
   -webkit-appearance: none !important;
   appearance: none !important;

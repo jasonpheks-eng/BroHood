@@ -119,23 +119,38 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     !rawMediaSrc.startsWith('idb://vid_') &&
     (isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc));
 
+  const isDefaultScene3Video =
+    !embedInfo.isEmbed &&
+    (rawMediaSrc.includes('Scene-3_fa779a89') ||
+      srcToPlay.includes('Scene-3_fa779a89') ||
+      rawMediaSrc.includes('Scene-3'));
+
   const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
-  const heroZoom =
+  const configuredZoom =
     Number(
       isCurrentItemImage
         ? settings.heroImageZoom ?? settings.heroVideoZoom ?? 1
         : settings.heroVideoZoom ?? settings.heroImageZoom ?? 1
     ) || 1;
-  const heroPosition =
+  const configuredPosition =
     (isCurrentItemImage
       ? settings.heroImagePosition || settings.heroVideoPosition
       : settings.heroVideoPosition || settings.heroImagePosition) || '50% 50%';
+
+  // Zoom in slightly on the bundled Scene-3 clip by default to cleanly crop out the bottom-right jitter.video watermark
+  const heroZoom =
+    isDefaultScene3Video && configuredZoom <= 1.05 ? 1.25 : configuredZoom;
+  const heroPosition =
+    isDefaultScene3Video && (!configuredPosition || configuredPosition === '50% 50%')
+      ? '50% 45%'
+      : configuredPosition;
 
   const attachVideoRef = useCallback((el: HTMLVideoElement | null) => {
     heroVideoRef.current = el;
     if (!el) return;
     el.muted = true;
     el.defaultMuted = true;
+    el.volume = 0;
     el.playsInline = true;
     el.autoplay = true;
     el.controls = false;
@@ -144,19 +159,9 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     el.setAttribute('muted', '');
     el.setAttribute('playsinline', '');
     el.setAttribute('webkit-playsinline', 'true');
+    el.setAttribute('autoplay', '');
     el.setAttribute('disablepictureinpicture', '');
     el.setAttribute('x-webkit-airplay', 'deny');
-    const playPromise = el.play();
-    if (playPromise !== undefined) {
-      playPromise
-        .then(() => {
-          setIsVideoPlaying(true);
-          setAutoplayBlocked(false);
-        })
-        .catch(() => {
-          // Handled by subsequent listeners and user gestures
-        });
-    }
   }, []);
 
   // Seamless mixed-playlist auto-cycling & mobile autoplay enforcement (zero play button)
@@ -197,30 +202,46 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     setIsVideoPlaying(!video.paused && !video.ended && video.readyState >= 2);
 
     let disposed = false;
+    let playInFlight = false;
 
     const attemptPlay = () => {
-      if (disposed) return;
+      if (disposed || playInFlight) return;
+      if (!video.paused && !video.ended && video.readyState >= 2) {
+        setAutoplayBlocked(false);
+        setIsVideoPlaying(true);
+        return;
+      }
       video.muted = true;
       video.defaultMuted = true;
+      video.volume = 0;
       video.playsInline = true;
+      video.autoplay = true;
       video.controls = false;
       video.removeAttribute('controls');
+      video.setAttribute('muted', '');
+      video.setAttribute('playsinline', '');
+      video.setAttribute('webkit-playsinline', 'true');
+      playInFlight = true;
       const playPromise = video.play();
       if (playPromise !== undefined) {
         playPromise
           .then(() => {
+            playInFlight = false;
             if (!disposed) {
               setAutoplayBlocked(false);
               setIsVideoPlaying(true);
             }
           })
           .catch((err) => {
+            playInFlight = false;
             if (disposed) return;
             if (err?.name === 'NotAllowedError') {
               setAutoplayBlocked(true);
               setIsVideoPlaying(false);
             }
           });
+      } else {
+        playInFlight = false;
       }
     };
 
@@ -315,13 +336,22 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     video.addEventListener('error', handleError);
     window.addEventListener('touchstart', handleUserGestureRetry, { passive: true });
     window.addEventListener('pointerdown', handleUserGestureRetry, { passive: true });
+    window.addEventListener('click', handleUserGestureRetry, { passive: true });
     window.addEventListener('scroll', handleUserGestureRetry, { passive: true });
+    window.addEventListener('mousemove', handleUserGestureRetry, { passive: true });
+    window.addEventListener('keydown', handleUserGestureRetry, { passive: true });
     document.addEventListener('visibilitychange', handleVisibilityRetry);
 
     attemptPlay();
+    const retryTimer = setTimeout(() => {
+      if (!disposed && video.paused) {
+        attemptPlay();
+      }
+    }, 180);
 
     return () => {
       disposed = true;
+      clearTimeout(retryTimer);
       video.removeEventListener('loadedmetadata', attemptPlay);
       video.removeEventListener('loadeddata', attemptPlay);
       video.removeEventListener('canplay', attemptPlay);
@@ -332,7 +362,10 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       video.removeEventListener('error', handleError);
       window.removeEventListener('touchstart', handleUserGestureRetry);
       window.removeEventListener('pointerdown', handleUserGestureRetry);
+      window.removeEventListener('click', handleUserGestureRetry);
       window.removeEventListener('scroll', handleUserGestureRetry);
+      window.removeEventListener('mousemove', handleUserGestureRetry);
+      window.removeEventListener('keydown', handleUserGestureRetry);
       document.removeEventListener('visibilitychange', handleVisibilityRetry);
     };
   }, [
@@ -402,6 +435,8 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                     />
                   </div>
                 )}
+                {/* Transparent shield prevents hover/tap media controls or play buttons */}
+                <div className="absolute inset-0 z-[5] pointer-events-none select-none" aria-hidden="true" />
                 <video
                   key={`${heroVideoIndex}:${srcToPlay}`}
                   ref={attachVideoRef}
@@ -420,7 +455,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   className={cn(
                     'w-full h-full pointer-events-none select-none autoplay-video transition-opacity duration-300',
                     heroFitClass,
-                    autoplayBlocked ? 'opacity-0' : 'opacity-100'
+                    autoplayBlocked && Boolean(settings.heroImageUrl) ? 'opacity-0' : 'opacity-100'
                   )}
                   style={{
                     objectPosition: heroPosition,

@@ -2004,6 +2004,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         {
                           heroVideoUrl: DEFAULT_HERO_LOOP_PATH,
                           heroVideoUrls: [DEFAULT_HERO_LOOP_PATH],
+                          heroVideoZoom: 1.25,
+                          heroVideoPosition: '50% 45%',
+                          heroMediaFit: 'cover',
                           heroExplicitDefaultReset: true,
                         },
                         'Default BrotherHood hero video applied & synced'
