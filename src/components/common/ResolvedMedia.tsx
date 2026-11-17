@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { getMedia, getCachedMediaSync, getServerMediaMirror } from '../../mediaStore';
 import { getEmbedVideoInfo, normalizeMediaUrlInput } from '../../mediaUrlUtils';
+import { MediaSkeleton } from './LoadingSkeletons';
 
 export function useResolvedMediaState(rawSrc?: string): {
   resolvedSrc: string;
@@ -95,21 +96,78 @@ export function useResolvedMedia(src?: string): string {
   return useResolvedMediaState(src).resolvedSrc;
 }
 
-export const ResolvedImage: React.FC<React.ImgHTMLAttributes<HTMLImageElement>> = ({
+interface ResolvedImageProps extends React.ImgHTMLAttributes<HTMLImageElement> {
+  skeleton?: 'light' | 'dark' | 'none';
+}
+
+export const ResolvedImage: React.FC<ResolvedImageProps> = ({
   src,
   alt = 'Media',
+  skeleton = 'none',
+  className,
+  onLoad,
+  onError,
   ...props
 }) => {
-  const resolvedSrc = useResolvedMedia(src);
-  if (!resolvedSrc || resolvedSrc.trim().startsWith('<')) return null;
-  return <img src={resolvedSrc} alt={alt} referrerPolicy="no-referrer" {...props} />;
+  const { resolvedSrc, isResolving } = useResolvedMediaState(src);
+  const [isLoaded, setIsLoaded] = useState(false);
+
+  useEffect(() => {
+    setIsLoaded(false);
+  }, [resolvedSrc]);
+
+  const attachImgRef = useCallback((el: HTMLImageElement | null) => {
+    if (el && el.complete && el.naturalWidth > 0) {
+      setIsLoaded(true);
+    }
+  }, []);
+
+  if (!resolvedSrc || resolvedSrc.trim().startsWith('<')) {
+    if (isResolving && skeleton !== 'none') {
+      return <MediaSkeleton variant={skeleton} className="absolute inset-0 z-0" />;
+    }
+    return null;
+  }
+
+  const showSkeleton = skeleton !== 'none' && (!isLoaded || isResolving);
+
+  return (
+    <>
+      {showSkeleton && (
+        <MediaSkeleton variant={skeleton} className="absolute inset-0 z-0" />
+      )}
+      <img
+        ref={attachImgRef}
+        src={resolvedSrc}
+        alt={alt}
+        referrerPolicy="no-referrer"
+        onLoad={(e) => {
+          setIsLoaded(true);
+          onLoad?.(e);
+        }}
+        onError={(e) => {
+          setIsLoaded(true);
+          onError?.(e);
+        }}
+        className={`${className || ''} transition-opacity duration-300 ${
+          skeleton !== 'none' ? (isLoaded ? 'opacity-100' : 'opacity-0') : ''
+        }`}
+        {...props}
+      />
+    </>
+  );
 };
 
-export const ResolvedVideo: React.FC<React.VideoHTMLAttributes<HTMLVideoElement>> = ({
+interface ResolvedVideoProps extends React.VideoHTMLAttributes<HTMLVideoElement> {
+  skeleton?: 'light' | 'dark' | 'none';
+}
+
+export const ResolvedVideo: React.FC<ResolvedVideoProps> = ({
   src,
   autoPlay,
   loop,
   muted,
+  skeleton = 'dark',
   className,
   style,
   ...props
@@ -118,43 +176,82 @@ export const ResolvedVideo: React.FC<React.VideoHTMLAttributes<HTMLVideoElement>
     () => getEmbedVideoInfo(src, { loop: loop !== false, muted: muted !== false, autoplay: Boolean(autoPlay) }),
     [src, loop, muted, autoPlay]
   );
-  const resolvedSrc = useResolvedMedia(embedInfo.isEmbed ? '' : src);
+  const { resolvedSrc, isResolving } = useResolvedMediaState(embedInfo.isEmbed ? '' : src);
   const videoRef = useRef<HTMLVideoElement | null>(null);
+  const [isPlaying, setIsPlaying] = useState(false);
 
   const applyAutoplayProps = useCallback((el: HTMLVideoElement | null) => {
     videoRef.current = el;
     if (!el) return;
     el.muted = true;
     el.defaultMuted = true;
+    el.volume = 0;
     el.playsInline = true;
     el.controls = false;
+    el.removeAttribute('controls');
     el.setAttribute('muted', '');
     el.setAttribute('playsinline', '');
     el.setAttribute('webkit-playsinline', 'true');
+    el.setAttribute('disablepictureinpicture', '');
   }, []);
 
   useEffect(() => {
+    setIsPlaying(false);
     if (embedInfo.isEmbed) return;
     const el = videoRef.current;
     if (!el || !resolvedSrc) return;
     applyAutoplayProps(el);
     if (!autoPlay) return;
 
+    let disposed = false;
+    let playPending = false;
+
     const tryPlay = () => {
+      if (disposed || playPending) return;
+      if (!el.paused && el.currentTime > 0) {
+        setIsPlaying(true);
+        return;
+      }
       el.muted = true;
       el.defaultMuted = true;
-      el.play().catch(() => {
-        // Ignore strict browser autoplay rejection
-      });
+      el.volume = 0;
+      playPending = true;
+      el.play()
+        .then(() => {
+          playPending = false;
+          if (!disposed) setIsPlaying(true);
+        })
+        .catch(() => {
+          playPending = false;
+        });
     };
 
-    el.addEventListener('canplay', tryPlay);
+    const onPlaying = () => {
+      if (!disposed) setIsPlaying(true);
+    };
+
+    const onTimeUpdate = () => {
+      if (!disposed && !el.paused && el.currentTime > 0) setIsPlaying(true);
+    };
+
+    el.addEventListener('loadedmetadata', tryPlay);
     el.addEventListener('loadeddata', tryPlay);
+    el.addEventListener('canplay', tryPlay);
+    el.addEventListener('playing', onPlaying);
+    el.addEventListener('timeupdate', onTimeUpdate);
+    window.addEventListener('touchstart', tryPlay, { passive: true });
+    window.addEventListener('scroll', tryPlay, { passive: true });
     tryPlay();
 
     return () => {
-      el.removeEventListener('canplay', tryPlay);
+      disposed = true;
+      el.removeEventListener('loadedmetadata', tryPlay);
       el.removeEventListener('loadeddata', tryPlay);
+      el.removeEventListener('canplay', tryPlay);
+      el.removeEventListener('playing', onPlaying);
+      el.removeEventListener('timeupdate', onTimeUpdate);
+      window.removeEventListener('touchstart', tryPlay);
+      window.removeEventListener('scroll', tryPlay);
     };
   }, [embedInfo.isEmbed, resolvedSrc, autoPlay, applyAutoplayProps]);
 
@@ -172,22 +269,43 @@ export const ResolvedVideo: React.FC<React.VideoHTMLAttributes<HTMLVideoElement>
     );
   }
 
-  if (!resolvedSrc || resolvedSrc.trim().startsWith('<')) return null;
+  if (!resolvedSrc || resolvedSrc.trim().startsWith('<')) {
+    if (isResolving && skeleton !== 'none') {
+      return <MediaSkeleton variant={skeleton} className="absolute inset-0 z-0" />;
+    }
+    return null;
+  }
+
+  const visibilityClass = autoPlay
+    ? isPlaying
+      ? 'opacity-100'
+      : 'opacity-0'
+    : 'opacity-100';
+
+  const showSkeleton = skeleton !== 'none' && (isResolving || (Boolean(autoPlay) && !isPlaying));
+
   return (
-    <video
-      key={resolvedSrc}
-      ref={applyAutoplayProps}
-      src={resolvedSrc}
-      autoPlay={autoPlay}
-      loop={loop}
-      muted
-      playsInline
-      controls={false}
-      disablePictureInPicture
-      disableRemotePlayback
-      className={className ? `${className} autoplay-video` : 'autoplay-video'}
-      style={style}
-      {...props}
-    />
+    <>
+      {showSkeleton && (
+        <MediaSkeleton variant={skeleton} className="absolute inset-0 z-0" />
+      )}
+      <video
+        key={resolvedSrc}
+        ref={applyAutoplayProps}
+        src={resolvedSrc}
+        autoPlay={autoPlay}
+        loop={loop}
+        muted
+        playsInline
+        preload="auto"
+        controls={false}
+        disablePictureInPicture
+        disableRemotePlayback
+        className={`${className ? `${className} ` : ''}autoplay-video transition-opacity duration-200 ${visibilityClass}`}
+        style={style}
+        {...props}
+      />
+    </>
   );
 };
+

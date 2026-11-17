@@ -54,6 +54,7 @@ const CreatorPostCard: React.FC<{
           <ResolvedImage
             src={post.mediaUrl}
             alt={post.creatorName || post.handle}
+            skeleton="dark"
             className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-105"
           />
         )}

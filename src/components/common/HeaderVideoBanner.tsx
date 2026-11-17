@@ -1,6 +1,7 @@
 import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from '../../types';
 import { ResolvedImage, useResolvedMediaState } from './ResolvedMedia';
+import { MediaSkeleton } from './LoadingSkeletons';
 import { getServerMediaMirror } from '../../mediaStore';
 import {
   DEFAULT_HERO_LOOP_PATH,
@@ -199,7 +200,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     if (!video) return;
 
     attachVideoRef(video);
-    setIsVideoPlaying(!video.paused && !video.ended && video.readyState >= 2);
+    setIsVideoPlaying(!video.paused && !video.ended && video.currentTime > 0 && video.readyState >= 2);
 
     let disposed = false;
     let playInFlight = false;
@@ -247,6 +248,13 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
 
     const handlePlaying = () => {
       if (!disposed) {
+        setAutoplayBlocked(false);
+        setIsVideoPlaying(true);
+      }
+    };
+
+    const handleTimeUpdate = () => {
+      if (!disposed && !video.paused && video.currentTime > 0) {
         setAutoplayBlocked(false);
         setIsVideoPlaying(true);
       }
@@ -331,6 +339,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     video.addEventListener('canplay', attemptPlay);
     video.addEventListener('canplaythrough', attemptPlay);
     video.addEventListener('playing', handlePlaying);
+    video.addEventListener('timeupdate', handleTimeUpdate);
     video.addEventListener('pause', handlePause);
     video.addEventListener('ended', handleEnded);
     video.addEventListener('error', handleError);
@@ -357,6 +366,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
       video.removeEventListener('canplay', attemptPlay);
       video.removeEventListener('canplaythrough', attemptPlay);
       video.removeEventListener('playing', handlePlaying);
+      video.removeEventListener('timeupdate', handleTimeUpdate);
       video.removeEventListener('pause', handlePause);
       video.removeEventListener('ended', handleEnded);
       video.removeEventListener('error', handleError);
@@ -414,6 +424,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
             ) : isCurrentItemImage ? (
               <ResolvedImage
                 src={rawMediaSrc}
+                skeleton="light"
                 className={cn('w-full h-full transition-opacity duration-500', heroFitClass)}
                 alt="Hero Campaign Media"
                 style={{
@@ -422,6 +433,10 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
               />
             ) : srcToPlay && !srcToPlay.trim().startsWith('<') ? (
               <>
+                {/* Subtle editorial skeleton shown while video buffers before first active frame (zero play button) */}
+                {!isVideoPlaying && !autoplayBlocked && (
+                  <MediaSkeleton variant="light" className="absolute inset-0 z-[1]" />
+                )}
                 {/* Clean fallback poster shown only if browser temporarily holds autoplay */}
                 {autoplayBlocked && Boolean(settings.heroImageUrl) && (
                   <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
@@ -453,9 +468,9 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   aria-hidden="true"
                   loop={heroMediaList.length === 1}
                   className={cn(
-                    'w-full h-full pointer-events-none select-none autoplay-video transition-opacity duration-300',
+                    'w-full h-full pointer-events-none select-none autoplay-video transition-opacity duration-200',
                     heroFitClass,
-                    autoplayBlocked && Boolean(settings.heroImageUrl) ? 'opacity-0' : 'opacity-100'
+                    isVideoPlaying && !autoplayBlocked ? 'opacity-100' : 'opacity-0'
                   )}
                   style={{
                     objectPosition: heroPosition,

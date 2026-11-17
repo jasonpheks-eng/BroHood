@@ -80,6 +80,7 @@ import { Storefront } from './components/store/Storefront';
 import { ShopLayout } from './components/shop/ShopLayout';
 import { AdminPanel } from './components/admin/AdminPanel';
 import { AdminLoginModal } from './components/admin/AdminLoginModal';
+import { StorefrontPageSkeleton } from './components/common/LoadingSkeletons';
 import { updateSupabaseConfig } from './supabase';
 import {
   syncProductToSupabase,
@@ -386,6 +387,7 @@ export default function App() {
   const [products, setProducts] = useState<Product[]>([]);
   const [creatorPosts, setCreatorPosts] = useState<CreatorPost[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isLoadingProducts, setIsLoadingProducts] = useState(true);
   const [view, setView] = useState<'store' | 'admin' | 'shop'>('store');
   const [initialShopCategory, setInitialShopCategory] = useState<string>('all');
   const [cart, setCart] = useState<CartItem[]>(() => {
@@ -465,6 +467,7 @@ export default function App() {
 
     const markProductsReady = () => {
       productsReady = true;
+      setIsLoadingProducts(false);
       if (settingsReady) setLoading(false);
     };
 
@@ -475,6 +478,7 @@ export default function App() {
 
     const loadingTimeoutId = setTimeout(() => {
       setLoading(false);
+      setIsLoadingProducts(false);
     }, 2500);
 
     const applySupabaseSettings = (incoming: Settings) => {
@@ -1287,14 +1291,7 @@ export default function App() {
   };
 
   if (loading) {
-    return (
-      <div className="min-h-screen flex flex-col items-center justify-center font-sans bg-white text-black gap-4 p-6">
-        <div className="w-8 h-8 border-2 border-black border-t-transparent animate-spin rounded-full" />
-        <div className="uppercase tracking-[0.25em] text-xs font-black text-zinc-700">
-          Loading BrotherHood...
-        </div>
-      </div>
-    );
+    return <StorefrontPageSkeleton />;
   }
 
   const totalCartCount = cart.reduce((sum, item) => sum + item.quantity, 0);
@@ -1378,6 +1375,7 @@ export default function App() {
         ) : view === 'shop' ? (
           <ShopLayout
             products={products}
+            isLoadingProducts={isLoadingProducts}
             settings={settings}
             initialCategory={initialShopCategory}
             onAddToCart={(p, s) => handleAddToCart(p, s || 'M', 1)}
@@ -1393,6 +1391,7 @@ export default function App() {
           <Storefront
             settings={settings}
             products={products}
+            isLoadingProducts={isLoadingProducts}
             creatorPosts={creatorPosts}
             onAddToCart={(p, s) => handleAddToCart(p, s || 'M', 1)}
             onQuickView={setQuickViewProduct}

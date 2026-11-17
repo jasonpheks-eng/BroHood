@@ -127,7 +127,12 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
                     selectedImageIndex === idx ? 'border-black ring-1 ring-black' : 'border-zinc-200 opacity-60 hover:opacity-100'
                   }`}
                 >
-                  <ResolvedImage src={imgSrc} alt={`${product.name} angle ${idx + 1}`} className="w-full h-full object-cover" />
+                  <ResolvedImage
+                    src={imgSrc}
+                    alt={`${product.name} angle ${idx + 1}`}
+                    skeleton="light"
+                    className="w-full h-full object-cover"
+                  />
                 </button>
               ))}
             </div>
@@ -136,10 +141,11 @@ export const ProductDetailModal: React.FC<ProductDetailModalProps> = ({
           {/* Large Main Viewport */}
           <div className="relative flex-grow aspect-[3/4] overflow-hidden bg-white border border-zinc-200 order-1 md:order-2 flex items-center justify-center">
             {allImages.length > 0 ? (
-              <div className="w-full h-full">
+              <div className="relative w-full h-full">
                 <ResolvedImage
                   src={allImages[selectedImageIndex]}
                   alt={product.name}
+                  skeleton="light"
                   className="w-full h-full object-cover"
                 />
               </div>

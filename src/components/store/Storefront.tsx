@@ -6,10 +6,12 @@ import { ResolvedImage } from '../common/ResolvedMedia';
 import { StudioGallery } from '../gallery/StudioGallery';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
 import { Helmet } from '../common/Helmet';
+import { ProductCardSkeleton } from '../common/LoadingSkeletons';
 
 interface StorefrontProps {
   settings: Settings;
   products: Product[];
+  isLoadingProducts?: boolean;
   creatorPosts: CreatorPost[];
   onAddToCart: (product: Product, size?: string) => void;
   onQuickView: (product: Product) => void;
@@ -20,6 +22,7 @@ interface StorefrontProps {
 export const Storefront: React.FC<StorefrontProps> = ({
   settings,
   products,
+  isLoadingProducts = false,
   creatorPosts,
   onAddToCart,
   onQuickView,
@@ -97,22 +100,28 @@ export const Storefront: React.FC<StorefrontProps> = ({
 
         {/* Horizontal Snap Scroll Cards */}
         <div className="flex overflow-x-auto snap-x snap-mandatory scrollbar-hide pb-12 gap-6 -mx-6 px-6 md:mx-0 md:px-0">
-          {products
-            .sort((a, b) => {
-              if (legacySort === 'price-asc') return a.price - b.price;
-              if (legacySort === 'price-desc') return b.price - a.price;
-              return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
-            })
-            .map((product) => (
-              <div key={product.id} className="min-w-[280px] md:min-w-[320px] snap-start">
-                <StoreProductCard
-                  product={product}
-                  onAddToCart={onAddToCart}
-                  onQuickView={onQuickView}
-                  onCategoryClick={(category) => onNavigateToShop(category)}
-                />
-              </div>
-            ))}
+          {isLoadingProducts && products.length === 0
+            ? Array.from({ length: 4 }).map((_, idx) => (
+                <div key={idx} className="min-w-[280px] md:min-w-[320px] snap-start">
+                  <ProductCardSkeleton />
+                </div>
+              ))
+            : [...products]
+                .sort((a, b) => {
+                  if (legacySort === 'price-asc') return a.price - b.price;
+                  if (legacySort === 'price-desc') return b.price - a.price;
+                  return (b.createdAt?.seconds || 0) - (a.createdAt?.seconds || 0);
+                })
+                .map((product) => (
+                  <div key={product.id} className="min-w-[280px] md:min-w-[320px] snap-start">
+                    <StoreProductCard
+                      product={product}
+                      onAddToCart={onAddToCart}
+                      onQuickView={onQuickView}
+                      onCategoryClick={(category) => onNavigateToShop(category)}
+                    />
+                  </div>
+                ))}
         </div>
       </section>
 
@@ -142,6 +151,7 @@ export const Storefront: React.FC<StorefrontProps> = ({
         {settings.editorialImageUrl && (
           <ResolvedImage
             src={settings.editorialImageUrl}
+            skeleton="dark"
             className="absolute inset-0 w-full h-full object-cover opacity-25 transition-all duration-300 pointer-events-none"
             alt={settings.aboutUsTitle || 'About Us'}
             style={{

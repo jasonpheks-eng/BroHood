@@ -3,9 +3,11 @@ import { Search, SlidersHorizontal, ArrowLeft } from 'lucide-react';
 import { Product, Settings } from '../../types';
 import { StoreProductCard } from '../common/StoreProductCard';
 import { Helmet } from '../common/Helmet';
+import { ProductGridSkeleton } from '../common/LoadingSkeletons';
 
 interface ShopLayoutProps {
   products: Product[];
+  isLoadingProducts?: boolean;
   settings: Settings;
   initialCategory?: string;
   onAddToCart: (product: Product, size?: string) => void;
@@ -26,6 +28,7 @@ const STANDARD_CATEGORIES = [
 
 export const ShopLayout: React.FC<ShopLayoutProps> = ({
   products,
+  isLoadingProducts = false,
   settings,
   initialCategory = 'all',
   onAddToCart,
@@ -204,7 +207,9 @@ export const ShopLayout: React.FC<ShopLayoutProps> = ({
         </div>
 
         {/* Product Grid */}
-        {filteredProducts.length === 0 ? (
+        {isLoadingProducts && products.length === 0 ? (
+          <ProductGridSkeleton count={8} />
+        ) : filteredProducts.length === 0 ? (
           <div className="text-center py-20 border border-dashed border-zinc-200 space-y-4">
             <SlidersHorizontal size={36} className="mx-auto text-zinc-300" />
             <p className="text-xs font-black uppercase tracking-widest text-zinc-500">

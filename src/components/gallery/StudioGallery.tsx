@@ -238,6 +238,7 @@ export const StudioGallery: React.FC<StudioGalleryProps> = ({
                       <ResolvedImage
                         src={item.image}
                         alt={item.title || 'Studio look'}
+                        skeleton="dark"
                         className={cn(
                           'absolute inset-0 w-full h-full object-cover transition-transform duration-700 ease-out group-hover:scale-105',
                           isActive && 'scale-105'

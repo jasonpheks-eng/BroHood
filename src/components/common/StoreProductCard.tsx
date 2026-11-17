@@ -46,6 +46,7 @@ export const StoreProductCard: React.FC<StoreProductCardProps> = ({
           <ResolvedImage
             src={product.imageUrl}
             alt={product.name}
+            skeleton="light"
             className="w-full h-full object-cover transition-transform duration-500 ease-out group-hover:scale-105"
           />
         ) : (

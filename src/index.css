@@ -213,14 +213,67 @@ video.autoplay-video::-internal-media-controls-overlay-cast-button,
   pointer-events: none !important;
 }
 
+@keyframes brotherhood-skeleton-sheen {
+  0% {
+    transform: translate3d(-100%, 0, 0);
+  }
+  100% {
+    transform: translate3d(100%, 0, 0);
+  }
+}
+
+.skeleton-shimmer,
+.skeleton-shimmer-dark {
+  position: relative;
+  overflow: hidden;
+}
+
+.skeleton-shimmer {
+  background-color: #eceae4;
+}
+
+.skeleton-shimmer-dark {
+  background-color: #211c1f;
+}
+
+.skeleton-shimmer::after,
+.skeleton-shimmer-dark::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  will-change: transform;
+  transform: translate3d(-100%, 0, 0);
+  animation: brotherhood-skeleton-sheen 1.65s cubic-bezier(0.4, 0, 0.2, 1) infinite;
+  pointer-events: none;
+}
+
+.skeleton-shimmer::after {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.58) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
+.skeleton-shimmer-dark::after {
+  background: linear-gradient(
+    90deg,
+    rgba(255, 255, 255, 0) 0%,
+    rgba(255, 255, 255, 0.08) 50%,
+    rgba(255, 255, 255, 0) 100%
+  );
+}
+
 @media (prefers-reduced-motion: reduce) {
   .marquee-fast,
   .anim-pulse-glow,
   .anim-float-drift,
   .anim-fade-up,
-  .hero-autoplay-breathe {
+  .hero-autoplay-breathe,
+  .skeleton-shimmer::after,
+  .skeleton-shimmer-dark::after {
     animation: none !important;
     transform: none !important;
   }
 }
-
