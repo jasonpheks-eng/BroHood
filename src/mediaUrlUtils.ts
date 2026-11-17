@@ -1,3 +1,12 @@
+export const DEFAULT_HERO_LOOP_PATH = '/assets/aistudio/Scene-3_fa779a89.mp4';
+export const LEGACY_DEFAULT_HERO_PATH = '/assets/aistudio/brotherhood_hero_loop.mp4';
+
+export function isDefaultHeroPath(url?: string): boolean {
+  if (!url || typeof url !== 'string') return false;
+  const trimmed = url.trim();
+  return trimmed === DEFAULT_HERO_LOOP_PATH || trimmed === LEGACY_DEFAULT_HERO_PATH;
+}
+
 export interface EmbedVideoInfo {
   isEmbed: boolean;
   embedUrl: string;

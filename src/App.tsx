@@ -15,7 +15,13 @@ import {
 } from 'firebase/firestore';
 import { db, auth } from './firebase';
 import { Product, Settings, CartItem, CreatorPost } from './types';
-import { normalizeHeroMediaList, normalizeMediaUrlInput } from './mediaUrlUtils';
+import {
+  DEFAULT_HERO_LOOP_PATH,
+  isDefaultHeroPath,
+  LEGACY_DEFAULT_HERO_PATH,
+  normalizeHeroMediaList,
+  normalizeMediaUrlInput,
+} from './mediaUrlUtils';
 
 enum OperationType {
   CREATE = 'create',
@@ -91,8 +97,9 @@ const DEFAULT_SETTINGS: Settings = {
   brandName: 'BROTHERHOOD',
   logoUrl: '/assets/aistudio/BRO_5917966d.png',
   heroImageUrl: '',
-  heroVideoUrl: '',
-  heroVideoUrls: [],
+  heroVideoUrl: DEFAULT_HERO_LOOP_PATH,
+  heroVideoUrls: [DEFAULT_HERO_LOOP_PATH],
+  heroExplicitDefaultReset: true,
   featuredImageUrl: '',
   editorialImageUrl: '',
   footerImageUrl: '',
@@ -134,12 +141,10 @@ interface CachedHeroPlaylist {
   explicitDefaultReset?: boolean;
 }
 
-const DEFAULT_HERO_LOOP_PATH = '/assets/aistudio/brotherhood_hero_loop.mp4';
-
 function isCustomHeroMediaUrl(url?: string): boolean {
   if (!url || typeof url !== 'string') return false;
   const trimmed = normalizeMediaUrlInput(url);
-  return Boolean(trimmed && trimmed !== DEFAULT_HERO_LOOP_PATH);
+  return Boolean(trimmed && !isDefaultHeroPath(trimmed));
 }
 
 function readHasAdminCustomHeroFlag(): boolean {
@@ -486,13 +491,15 @@ export default function App() {
       }
 
       const explicitReset = incoming.heroExplicitDefaultReset === true;
-      const cleanedRawUrls = Array.isArray(incoming.heroVideoUrls)
-        ? normalizeHeroMediaList(incoming.heroVideoUrls)
-        : [];
-      const customOnlyUrls = cleanedRawUrls.filter((u) => u !== defaultHero);
-      const rawSingleHero = incoming.heroVideoUrl
+      const cleanedRawUrls = (
+        Array.isArray(incoming.heroVideoUrls) ? normalizeHeroMediaList(incoming.heroVideoUrls) : []
+      ).map((u) => (u === LEGACY_DEFAULT_HERO_PATH ? DEFAULT_HERO_LOOP_PATH : u));
+      const customOnlyUrls = cleanedRawUrls.filter((u) => !isDefaultHeroPath(u));
+      const rawSingleRaw = incoming.heroVideoUrl
         ? normalizeMediaUrlInput(incoming.heroVideoUrl)
         : '';
+      const rawSingleHero =
+        rawSingleRaw === LEGACY_DEFAULT_HERO_PATH ? DEFAULT_HERO_LOOP_PATH : rawSingleRaw;
       const customSingleHero = isCustomHeroMediaUrl(rawSingleHero) ? rawSingleHero : '';
 
       const hasIncomingCustom = customOnlyUrls.length > 0 || Boolean(customSingleHero);
@@ -509,13 +516,15 @@ export default function App() {
       const cleanedHeroUrls =
         customOnlyUrls.length > 0
           ? customOnlyUrls
-          : explicitReset && !hasCustomHeroRef.current
-          ? cleanedRawUrls
+          : explicitReset
+          ? cleanedRawUrls.length > 0
+            ? cleanedRawUrls
+            : [defaultHero]
           : [];
       const cleanedSingleHero = customSingleHero
         ? customSingleHero
-        : explicitReset && !hasCustomHeroRef.current
-        ? rawSingleHero
+        : explicitReset
+        ? rawSingleHero || defaultHero
         : '';
 
       const finalHeroUrls =
@@ -530,7 +539,7 @@ export default function App() {
         const prevCustomUrls = (prev.heroVideoUrls || []).filter(isCustomHeroMediaUrl);
         const prevHasCustom = prevCustomUrls.length > 0 || isCustomHeroMediaUrl(prev.heroVideoUrl);
         const incomingIsDefaultPath =
-          cleanedRawUrls.includes(defaultHero) || rawSingleHero === defaultHero;
+          cleanedRawUrls.some((u) => isDefaultHeroPath(u)) || isDefaultHeroPath(rawSingleHero);
 
         if ((prevHasCustom || hasCustomHeroRef.current) && !explicitReset) {
           const preservedUrls =
@@ -559,13 +568,36 @@ export default function App() {
           }
         }
 
+        if (explicitReset && !hasIncomingCustom) {
+          const resetUrls = [defaultHero];
+          writeCachedHeroPlaylist(resetUrls, defaultHero, true);
+          return {
+            ...prev,
+            ...incoming,
+            heroVideoUrls: resetUrls,
+            heroVideoUrl: defaultHero,
+            heroExplicitDefaultReset: true,
+            whatsappNumber:
+              incoming.whatsappNumber !== undefined
+                ? incoming.whatsappNumber
+                : prev.whatsappNumber || '',
+          };
+        }
+
         if (finalHeroUrls && finalHeroUrls.length > 0) {
           const isDefaultOnly =
-            explicitReset && finalHeroUrls.length === 1 && finalHeroUrls[0] === defaultHero;
+            explicitReset && finalHeroUrls.length === 1 && isDefaultHeroPath(finalHeroUrls[0]);
           writeCachedHeroPlaylist(finalHeroUrls, finalHeroUrl, isDefaultOnly);
         }
 
-        const safeUrls = finalHeroUrls ?? prevCustomUrls;
+        const safeUrls =
+          finalHeroUrls && finalHeroUrls.length > 0
+            ? finalHeroUrls
+            : prevCustomUrls.length > 0
+            ? prevCustomUrls
+            : !hasCustomHeroRef.current
+            ? [defaultHero]
+            : [];
         const safeUrl =
           finalHeroUrl !== undefined
             ? finalHeroUrl
@@ -577,7 +609,7 @@ export default function App() {
           heroVideoUrls: safeUrls,
           heroVideoUrl: safeUrl,
           heroExplicitDefaultReset:
-            explicitReset && safeUrls.includes(defaultHero) && !safeUrls.some(isCustomHeroMediaUrl),
+            !safeUrls.some(isCustomHeroMediaUrl) && safeUrls.some((u) => isDefaultHeroPath(u)),
           whatsappNumber:
             incoming.whatsappNumber !== undefined
               ? incoming.whatsappNumber
@@ -629,15 +661,17 @@ export default function App() {
                 !u.includes('Scene-1') &&
                 !u.includes('Scene-7')
             )
-          );
-          const customOnlyFirestore = normalizedHeroUrls.filter((u) => u !== defaultHero);
-          const rawSingleHero =
+          ).map((u) => (u === LEGACY_DEFAULT_HERO_PATH ? defaultHero : u));
+          const customOnlyFirestore = normalizedHeroUrls.filter((u) => !isDefaultHeroPath(u));
+          const rawSingleRaw =
             typeof data.heroVideoUrl === 'string' &&
             data.heroVideoUrl.trim().length > 0 &&
             !data.heroVideoUrl.includes('Scene-1') &&
             !data.heroVideoUrl.includes('Scene-7')
               ? normalizeMediaUrlInput(data.heroVideoUrl)
               : '';
+          const rawSingleHero =
+            rawSingleRaw === LEGACY_DEFAULT_HERO_PATH ? defaultHero : rawSingleRaw;
           const customSingleHero = isCustomHeroMediaUrl(rawSingleHero) ? rawSingleHero : '';
 
           const hasFirestoreCustom = customOnlyFirestore.length > 0 || Boolean(customSingleHero);
@@ -650,16 +684,19 @@ export default function App() {
           }
 
           // Ignore the default loop path completely unless an explicit Reset to Default action was triggered
+          // or no custom hero media has ever been configured
           const cleanedHeroUrls =
             customOnlyFirestore.length > 0
               ? customOnlyFirestore
-              : explicitReset && !hasCustomHeroRef.current
-              ? normalizedHeroUrls
+              : explicitReset
+              ? normalizedHeroUrls.length > 0
+                ? normalizedHeroUrls
+                : [defaultHero]
               : [];
           const validSingleHeroUrl = customSingleHero
             ? customSingleHero
-            : explicitReset && !hasCustomHeroRef.current
-            ? rawSingleHero
+            : explicitReset
+            ? rawSingleHero || defaultHero
             : '';
 
           const merged: Settings = { ...DEFAULT_SETTINGS, ...data };
@@ -670,14 +707,11 @@ export default function App() {
               merged.heroVideoUrls = cachedCustomUrls;
               merged.heroVideoUrl = cachedCustomUrls[0];
               merged.heroExplicitDefaultReset = false;
-            } else if (
-              explicitReset &&
-              !hasCustomHeroRef.current &&
-              cachedHero?.explicitDefaultReset &&
-              cachedHero.heroVideoUrls.length > 0
-            ) {
-              merged.heroVideoUrls = cachedHero.heroVideoUrls;
-              merged.heroVideoUrl = cachedHero.heroVideoUrl;
+            } else if (!hasCustomHeroRef.current) {
+              merged.heroVideoUrl = defaultHero;
+              merged.heroVideoUrls = [defaultHero];
+              merged.heroExplicitDefaultReset = true;
+              writeCachedHeroPlaylist([defaultHero], defaultHero, true);
             } else {
               merged.heroVideoUrl = '';
               merged.heroVideoUrls = [];
@@ -687,28 +721,23 @@ export default function App() {
             const isFirestoreOnlyDefault =
               explicitReset &&
               cleanedHeroUrls.length === 1 &&
-              cleanedHeroUrls[0] === defaultHero;
-            const cachedHero = readCachedHeroPlaylist();
-            const cachedCustomUrls = (cachedHero?.heroVideoUrls || []).filter(isCustomHeroMediaUrl);
+              isDefaultHeroPath(cleanedHeroUrls[0]);
 
-            if (isFirestoreOnlyDefault && (hasCustomHeroRef.current || cachedCustomUrls.length > 0)) {
-              merged.heroVideoUrls = cachedCustomUrls;
-              merged.heroVideoUrl = cachedCustomUrls[0] || '';
-              merged.heroExplicitDefaultReset = false;
-            } else {
-              merged.heroVideoUrls = cleanedHeroUrls;
-              merged.heroVideoUrl = validSingleHeroUrl || cleanedHeroUrls[0];
-              merged.heroExplicitDefaultReset = isFirestoreOnlyDefault;
-              writeCachedHeroPlaylist(
-                merged.heroVideoUrls,
-                merged.heroVideoUrl,
-                isFirestoreOnlyDefault
-              );
-            }
+            merged.heroVideoUrls = isFirestoreOnlyDefault ? [defaultHero] : cleanedHeroUrls;
+            merged.heroVideoUrl = isFirestoreOnlyDefault
+              ? defaultHero
+              : validSingleHeroUrl || cleanedHeroUrls[0];
+            merged.heroExplicitDefaultReset = isFirestoreOnlyDefault;
+            writeCachedHeroPlaylist(
+              merged.heroVideoUrls,
+              merged.heroVideoUrl,
+              isFirestoreOnlyDefault
+            );
           } else if (validSingleHeroUrl) {
-            const isDefaultSingle = explicitReset && validSingleHeroUrl === defaultHero;
-            merged.heroVideoUrls = [validSingleHeroUrl];
-            merged.heroVideoUrl = validSingleHeroUrl;
+            const isDefaultSingle = explicitReset && isDefaultHeroPath(validSingleHeroUrl);
+            const resolvedUrl = isDefaultSingle ? defaultHero : validSingleHeroUrl;
+            merged.heroVideoUrls = [resolvedUrl];
+            merged.heroVideoUrl = resolvedUrl;
             merged.heroExplicitDefaultReset = isDefaultSingle;
             writeCachedHeroPlaylist(
               merged.heroVideoUrls,
@@ -1043,15 +1072,19 @@ export default function App() {
     const defaultHero = DEFAULT_HERO_LOOP_PATH;
     const explicitDefaultResetRequested = cleanSettings.heroExplicitDefaultReset === true;
     const rawHeroUrls = Array.isArray(cleanSettings.heroVideoUrls)
-      ? normalizeHeroMediaList(cleanSettings.heroVideoUrls)
+      ? normalizeHeroMediaList(cleanSettings.heroVideoUrls).map((u) =>
+          u === LEGACY_DEFAULT_HERO_PATH ? defaultHero : u
+        )
       : cleanSettings.heroVideoUrl
-      ? normalizeHeroMediaList([cleanSettings.heroVideoUrl])
+      ? normalizeHeroMediaList([cleanSettings.heroVideoUrl]).map((u) =>
+          u === LEGACY_DEFAULT_HERO_PATH ? defaultHero : u
+        )
       : undefined;
     const nextHeroUrls = rawHeroUrls
       ? (() => {
-          const customOnly = rawHeroUrls.filter((u) => u !== defaultHero);
+          const customOnly = rawHeroUrls.filter((u) => !isDefaultHeroPath(u));
           if (customOnly.length > 0) return customOnly;
-          return explicitDefaultResetRequested ? rawHeroUrls : [];
+          return explicitDefaultResetRequested ? [defaultHero] : [];
         })()
       : undefined;
     if (nextHeroUrls) {
@@ -1061,7 +1094,7 @@ export default function App() {
       cleanSettings.heroVideoUrls = nextHeroUrls;
       cleanSettings.heroVideoUrl =
         nextHeroUrls[0] ||
-        (isExplicitResetNow ? normalizeMediaUrlInput(cleanSettings.heroVideoUrl) : '') ||
+        (isExplicitResetNow ? defaultHero : '') ||
         '';
       cleanSettings.heroExplicitDefaultReset = isExplicitResetNow;
       if (hasCustomSaved) {

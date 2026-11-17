@@ -68,7 +68,13 @@ import {
   isSecretSupabaseKey,
 } from '../../supabase';
 import { ResolvedImage, ResolvedVideo } from '../common/ResolvedMedia';
-import { getEmbedVideoInfo, normalizeHeroMediaList, normalizeMediaUrlInput } from '../../mediaUrlUtils';
+import {
+  DEFAULT_HERO_LOOP_PATH,
+  getEmbedVideoInfo,
+  isDefaultHeroPath,
+  normalizeHeroMediaList,
+  normalizeMediaUrlInput,
+} from '../../mediaUrlUtils';
 import { loadMediaBlob } from '../../mediaStore';
 import { StudioGalleryAdmin } from '../gallery/StudioGalleryAdmin';
 import { useStudioGalleryState } from '../../hooks/useStudioGalleryState';
@@ -680,13 +686,10 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
       heroExplicitDefaultReset: isExplicitDefaultReset,
     };
     if (Array.isArray(merged.heroVideoUrls)) {
-      const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
       const usable = normalizeHeroMediaList(merged.heroVideoUrls);
-      const customOnly = usable.filter((u) => u !== defaultHero);
+      const customOnly = usable.filter((u) => !isDefaultHeroPath(u));
       const finalPlaylist = isExplicitDefaultReset
-        ? usable.length > 0
-          ? usable
-          : [defaultHero]
+        ? [DEFAULT_HERO_LOOP_PATH]
         : customOnly;
       merged.heroVideoUrls = finalPlaylist;
       merged.heroVideoUrl = finalPlaylist[0] || '';
@@ -731,7 +734,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         );
         const hadOnlyDefault =
           current.length === 0 ||
-          (current.length === 1 && current[0] === '/assets/aistudio/brotherhood_hero_loop.mp4');
+          (current.length === 1 && isDefaultHeroPath(current[0]));
         const nextList = hadOnlyDefault ? [...uploadedUrls] : [...current, ...uploadedUrls];
         await applyAndSyncHeroSettings(
           {
@@ -977,7 +980,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
         }
       }
       if (sanitized.heroVideoUrls && Array.isArray(sanitized.heroVideoUrls)) {
-        const defaultHero = '/assets/aistudio/brotherhood_hero_loop.mp4';
+        const defaultHero = DEFAULT_HERO_LOOP_PATH;
         const isExplicitDefaultReset = sanitized.heroExplicitDefaultReset === true;
         const cleanedUrls = await Promise.all(
           sanitized.heroVideoUrls.map(async (url: string, i: number) => {
@@ -990,8 +993,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
           })
         );
         const filtered = normalizeHeroMediaList(cleanedUrls);
-        const customOnly = filtered.filter((u) => u !== defaultHero);
-        const finalUrls = customOnly.length > 0 ? customOnly : isExplicitDefaultReset ? filtered : [];
+        const customOnly = filtered.filter((u) => !isDefaultHeroPath(u));
+        const finalUrls = customOnly.length > 0 ? customOnly : isExplicitDefaultReset ? [defaultHero] : [];
         sanitized.heroVideoUrls = finalUrls;
         sanitized.heroVideoUrl = finalUrls[0] || '';
         sanitized.heroExplicitDefaultReset =
@@ -1999,8 +2002,8 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                     onClick={() =>
                       applyAndSyncHeroSettings(
                         {
-                          heroVideoUrl: '/assets/aistudio/brotherhood_hero_loop.mp4',
-                          heroVideoUrls: ['/assets/aistudio/brotherhood_hero_loop.mp4'],
+                          heroVideoUrl: DEFAULT_HERO_LOOP_PATH,
+                          heroVideoUrls: [DEFAULT_HERO_LOOP_PATH],
                           heroExplicitDefaultReset: true,
                         },
                         'Default BrotherHood hero video applied & synced'
@@ -2205,7 +2208,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                         cleanDisplayUrl.toLowerCase().startsWith('idb://img_') ||
                         /\.(jpeg|jpg|gif|png|webp|svg|avif|bmp|heic|heif)($|\?|#)/i.test(cleanDisplayUrl))
                   );
-                  const isDefaultTrack = cleanDisplayUrl === '/assets/aistudio/brotherhood_hero_loop.mp4';
+                  const isDefaultTrack = isDefaultHeroPath(cleanDisplayUrl);
                   const storageBadge = !cleanDisplayUrl
                     ? ''
                     : isDefaultTrack
@@ -2332,7 +2335,7 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                             const currentArr = formSettingsRef.current.heroVideoUrls || [];
                             const usable = normalizeHeroMediaList(currentArr);
                             const customOnly = usable.filter(
-                              (u) => u !== '/assets/aistudio/brotherhood_hero_loop.mp4'
+                              (u) => !isDefaultHeroPath(u)
                             );
                             const finalUrls = customOnly.length > 0 ? customOnly : usable;
                             if (

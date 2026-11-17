@@ -2,7 +2,13 @@ import React, { useState, useRef, useEffect, useCallback } from 'react';
 import { Settings } from '../../types';
 import { ResolvedImage, useResolvedMediaState } from './ResolvedMedia';
 import { getServerMediaMirror } from '../../mediaStore';
-import { getEmbedVideoInfo, normalizeHeroMediaList, normalizeMediaUrlInput } from '../../mediaUrlUtils';
+import {
+  DEFAULT_HERO_LOOP_PATH,
+  getEmbedVideoInfo,
+  LEGACY_DEFAULT_HERO_PATH,
+  normalizeHeroMediaList,
+  normalizeMediaUrlInput,
+} from '../../mediaUrlUtils';
 import { cn } from '../../utils';
 
 interface HeaderVideoBannerProps {
@@ -38,9 +44,15 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
   const heroMediaList = React.useMemo(() => {
     const rawList =
       settings.heroVideoUrls && settings.heroVideoUrls.length > 0
-        ? normalizeHeroMediaList(settings.heroVideoUrls)
+        ? normalizeHeroMediaList(settings.heroVideoUrls).map((u) =>
+            u === LEGACY_DEFAULT_HERO_PATH ? DEFAULT_HERO_LOOP_PATH : u
+          )
         : [];
-    const normalizedSingleVideo = normalizeMediaUrlInput(settings.heroVideoUrl);
+    const normalizedSingleRaw = normalizeMediaUrlInput(settings.heroVideoUrl);
+    const normalizedSingleVideo =
+      normalizedSingleRaw === LEGACY_DEFAULT_HERO_PATH
+        ? DEFAULT_HERO_LOOP_PATH
+        : normalizedSingleRaw;
     const normalizedSingleImage = normalizeMediaUrlInput(settings.heroImageUrl);
     if (rawList.length > 0) return rawList;
     if (normalizedSingleVideo) return [normalizedSingleVideo];
@@ -106,7 +118,6 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     !embedInfo.isEmbed &&
     !rawMediaSrc.startsWith('idb://vid_') &&
     (isImageSource(activeMediaSrc) || isImageSource(rawMediaSrc));
-  const isExplicitDefaultHero = !embedInfo.isEmbed && srcToPlay.includes('brotherhood_hero_loop');
 
   const heroFitClass = settings.heroMediaFit === 'contain' ? 'object-contain' : 'object-cover';
   const heroZoom =
@@ -378,16 +389,11 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
               />
             ) : srcToPlay && !srcToPlay.trim().startsWith('<') ? (
               <>
-                {/* Clean fallback poster shown only if browser temporarily holds autoplay or explicit default buffers */}
-                {((!isVideoPlaying && isExplicitDefaultHero) ||
-                  (autoplayBlocked && Boolean(settings.heroImageUrl))) && (
+                {/* Clean fallback poster shown only if browser temporarily holds autoplay */}
+                {autoplayBlocked && Boolean(settings.heroImageUrl) && (
                   <div className="absolute inset-0 z-10 bg-white flex items-center justify-center overflow-hidden pointer-events-none">
                     <img
-                      src={
-                        isExplicitDefaultHero
-                          ? '/assets/aistudio/BROTHERHOOD_FRONT_021800_4b36c0cc.jpg'
-                          : settings.heroImageUrl!
-                      }
+                      src={settings.heroImageUrl!}
                       alt="BrotherHood"
                       className={cn('w-full h-full', heroFitClass)}
                       style={{
@@ -414,11 +420,7 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
                   className={cn(
                     'w-full h-full pointer-events-none select-none autoplay-video transition-opacity duration-300',
                     heroFitClass,
-                    autoplayBlocked
-                      ? 'opacity-0'
-                      : isVideoPlaying || !isExplicitDefaultHero
-                      ? 'opacity-100'
-                      : 'opacity-0'
+                    autoplayBlocked ? 'opacity-0' : 'opacity-100'
                   )}
                   style={{
                     objectPosition: heroPosition,
