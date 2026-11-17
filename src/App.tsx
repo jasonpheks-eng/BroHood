@@ -84,6 +84,7 @@ import {
   syncStudioGalleryToSupabase,
   fetchSupabaseData,
   subscribeToSupabaseRealtime,
+  emitRealtimeBroadcast,
 } from './supabaseSync';
 
 const DEFAULT_SETTINGS: Settings = {
@@ -474,7 +475,7 @@ export default function App() {
     const applySupabaseSettings = (incoming: Settings) => {
       const incomingTs = Number(incoming.settingsUpdatedAt) || 0;
       const newestKnownTs = Math.max(latestFirestoreSettingsTs, sessionSavedTsRef.current);
-      if (newestKnownTs > 0 && (incomingTs === 0 || newestKnownTs > incomingTs + 500)) {
+      if (newestKnownTs > 0 && incomingTs > 0 && newestKnownTs > incomingTs + 1500) {
         return;
       }
       if (incomingTs > latestSupabaseSettingsTs) {
@@ -1107,6 +1108,12 @@ export default function App() {
         { merge: true }
       ),
       syncSettingsToSupabase(cleanSettings),
+      emitRealtimeBroadcast('full_sync', {
+        settings: cleanSettings,
+        studioGallery: nextGallery,
+        products,
+        creatorPosts,
+      }),
     ];
     if (nextGallery) {
       syncTasks.push(syncStudioGalleryToSupabase(nextGallery));

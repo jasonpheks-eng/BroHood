@@ -135,6 +135,17 @@ export const HeaderVideoBanner: React.FC<HeaderVideoBannerProps> = ({ settings }
     el.setAttribute('webkit-playsinline', 'true');
     el.setAttribute('disablepictureinpicture', '');
     el.setAttribute('x-webkit-airplay', 'deny');
+    const playPromise = el.play();
+    if (playPromise !== undefined) {
+      playPromise
+        .then(() => {
+          setIsVideoPlaying(true);
+          setAutoplayBlocked(false);
+        })
+        .catch(() => {
+          // Handled by subsequent listeners and user gestures
+        });
+    }
   }, []);
 
   // Seamless mixed-playlist auto-cycling & mobile autoplay enforcement (zero play button)

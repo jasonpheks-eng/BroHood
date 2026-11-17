@@ -34,12 +34,28 @@ export function useResolvedMediaState(rawSrc?: string): {
         return;
       }
       setState({ resolvedSrc: '', isResolving: true });
-      getMedia(src).then((val) => {
+      getMedia(src).then(async (val) => {
+        if (!isMounted) return;
+        if (val && !val.startsWith('idb://')) {
+          setState({ resolvedSrc: val, isResolving: false });
+          return;
+        }
+        // Fallback: check if the server has a stored file for this media name
+        try {
+          const rawName = src.replace(/^idb:\/\/(vid|img)_\d+_/, '');
+          const res = await fetch(`/api/resolve-idb?name=${encodeURIComponent(rawName)}`);
+          if (res.ok) {
+            const data = (await res.json()) as { url?: string };
+            if (isMounted && data.url) {
+              setState({ resolvedSrc: data.url, isResolving: false });
+              return;
+            }
+          }
+        } catch {
+          // ignore
+        }
         if (isMounted) {
-          setState({
-            resolvedSrc: val && !val.startsWith('idb://') ? val : '',
-            isResolving: false,
-          });
+          setState({ resolvedSrc: '', isResolving: false });
         }
       });
     } else if (src.startsWith('/uploads/')) {

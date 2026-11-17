@@ -82,6 +82,18 @@ function isSafeUploadId(uploadId: string): boolean {
 async function startServer() {
   const app = express();
 
+  // Universal CORS middleware for cross-origin iframes, preview domains, and mobile devices
+  app.use((req, res, next) => {
+    res.setHeader('Access-Control-Allow-Origin', '*');
+    res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS, HEAD');
+    res.setHeader('Access-Control-Allow-Headers', '*');
+    if (req.method === 'OPTIONS') {
+      res.sendStatus(204);
+      return;
+    }
+    next();
+  });
+
   // Single-request upload (fast path for files <= 4MB; also works up to 150MB locally)
   app.post(
     '/api/upload-media',
@@ -120,6 +132,31 @@ async function startServer() {
       maxUploadBytes: MAX_UPLOAD_BYTES,
       chunkLimitBytes: CHUNK_LIMIT_BYTES,
     });
+  });
+
+  // Resolve an idb:// file name to an existing server upload file if present
+  app.get('/api/resolve-idb', (req: Request, res: Response) => {
+    try {
+      const rawName = String(req.query.name || req.query.key || '').trim();
+      if (!rawName) {
+        res.status(400).json({ error: 'Missing name or key' });
+        return;
+      }
+      const safeSearch = path.basename(rawName).replace(/^idb:\/\/(vid|img)_\d+_/, '').toLowerCase();
+      if (!safeSearch) {
+        res.status(404).json({ error: 'No matching file' });
+        return;
+      }
+      const files = fs.readdirSync(UPLOADS_DIR);
+      const matched = files.find((f) => !f.startsWith('.tmp_') && f.toLowerCase().includes(safeSearch));
+      if (matched) {
+        res.json({ url: `/uploads/${matched}` });
+        return;
+      }
+      res.status(404).json({ error: 'Not found on server' });
+    } catch {
+      res.status(500).json({ error: 'Failed to search uploads' });
+    }
   });
 
   // Chunked upload Step 1: Initialize session (bypasses Cloud Run 32 MiB single-request body limit)
@@ -244,10 +281,26 @@ async function startServer() {
       return;
     }
 
-    const filePath = path.join(UPLOADS_DIR, safeName);
+    let filePath = path.join(UPLOADS_DIR, safeName);
     if (!fs.existsSync(filePath)) {
-      res.status(404).end('Media not found');
-      return;
+      // 1. Fallback: match by stripped base name in UPLOADS_DIR
+      const stripped = safeName.replace(/^\d+_[a-z0-9]+_/, '').toLowerCase();
+      const files = fs.readdirSync(UPLOADS_DIR);
+      const matched = files.find(
+        (f) => !f.startsWith('.tmp_') && f.toLowerCase().includes(stripped)
+      );
+      if (matched) {
+        filePath = path.join(UPLOADS_DIR, matched);
+      } else {
+        // 2. Fallback: check public/assets/aistudio
+        const publicMatch = path.join(ROOT_DIR, 'public', 'assets', 'aistudio', safeName);
+        if (fs.existsSync(publicMatch)) {
+          filePath = publicMatch;
+        } else {
+          res.status(404).end('Media not found');
+          return;
+        }
+      }
     }
 
     const stat = fs.statSync(filePath);

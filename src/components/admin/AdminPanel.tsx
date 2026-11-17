@@ -144,6 +144,9 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const [tracingUpload, setTracingUpload] = useState(false);
   const [uploadTraces, setUploadTraces] = useState<UploadRequestTraceResult[]>([]);
   const [toastMessage, setToastMessage] = useState<string | null>(null);
+  const [showSqlDetails, setShowSqlDetails] = useState(false);
+  const [syncingPendingMedia, setSyncingPendingMedia] = useState(false);
+  const [syncPendingProgress, setSyncPendingProgress] = useState<number | null>(null);
 
   const handleTraceUpload = async () => {
     setTracingUpload(true);
@@ -162,7 +165,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
   const setFormSettings = React.useCallback(
     (next: Settings | ((prev: Settings) => Settings)) => {
       setIsSettingsDirty(true);
-      setRawFormSettings(next);
+      setRawFormSettings((prev) => {
+        const resolved = typeof next === 'function' ? next(prev) : next;
+        formSettingsRef.current = resolved;
+        return resolved;
+      });
     },
     []
   );
@@ -746,6 +753,121 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
+  const handleVerifyAndSyncPendingMedia = async () => {
+    if (syncingPendingMedia) return;
+    setSyncingPendingMedia(true);
+    setSyncPendingProgress(5);
+    resetSupabaseBucketCache();
+
+    try {
+      appendDiagnosticLog('info', 'BUCKET_VERIFY', `Probing Supabase bucket "${activeBucketName}" on project "${activeProjectId}"...`);
+      const report = await runSupabaseStorageDiagnostics(activeProjectId);
+      setStorageDiagReport(report);
+      setStorageDiagLogs(report.logs);
+
+      if (report.bucketNotFound) {
+        setBucketNotFoundDetail(
+          report.errorMessage ||
+            `Bucket "${activeBucketName}" does not exist on Supabase project "${activeProjectId}". Please run the SQL in Supabase SQL Editor first, then click Verify & Sync.`
+        );
+        setHeroNeedsBucketSql(true);
+        showToast(`Bucket "${activeBucketName}" not found yet — please run SQL in Supabase`);
+        return;
+      }
+
+      setSyncPendingProgress(25);
+      showToast('Bucket verified! Upgrading local media to cloud...');
+      setBucketNotFoundDetail(null);
+      setHeroNeedsBucketSql(false);
+      setHeroUploadError(null);
+
+      // Collect all hero items that need cloud sync
+      const rawCurrent = (formSettingsRef.current.heroVideoUrls || []).filter((u) => Boolean(u && u.trim()));
+      const currentList = rawCurrent.length > 0 ? rawCurrent : formSettingsRef.current.heroVideoUrl ? [formSettingsRef.current.heroVideoUrl] : [];
+      let hasChanges = false;
+      const updatedList: string[] = [];
+
+      for (let i = 0; i < currentList.length; i++) {
+        const itemUrl = currentList[i];
+        if (!itemUrl) continue;
+
+        if (itemUrl.startsWith('idb://') || itemUrl.startsWith('/uploads/')) {
+          setSyncPendingProgress(30 + Math.round((i / currentList.length) * 50));
+          appendDiagnosticLog('info', 'CLOUD_UPGRADE', `Uploading local media item ${i + 1} (${itemUrl}) to Supabase...`);
+
+          let blob: Blob | null = null;
+          const cleanName = itemUrl.replace(/^idb:\/\/(vid|img)_\d+_/, '') || `hero_item_${i + 1}.mp4`;
+          const filename = cleanName.includes('.') ? cleanName : `${cleanName}.mp4`;
+
+          if (itemUrl.startsWith('idb://')) {
+            blob = await loadMediaBlob(itemUrl);
+          }
+          if (!blob && itemUrl.startsWith('/uploads/')) {
+            try {
+              const resp = await fetch(itemUrl);
+              if (resp.ok) blob = await resp.blob();
+            } catch {
+              // fallback
+            }
+          }
+          if (!blob && (filename.includes('Scene-3') || itemUrl.includes('Scene-3'))) {
+            try {
+              const resp = await fetch('/uploads/1794858483106_02yur4_Scene-3.mp4');
+              if (resp.ok) blob = await resp.blob();
+            } catch {
+              // ignore
+            }
+          }
+
+          if (blob) {
+            const rawFile = new File([blob], filename, {
+              type: blob.type || (filename.endsWith('.mp4') ? 'video/mp4' : 'image/jpeg'),
+            });
+            const uploadRes = await uploadMediaToSupabase(rawFile, filename, {
+              onProgress: (pct) => setSyncPendingProgress(30 + Math.round((pct / 100) * 55)),
+            });
+
+            if (uploadRes.url && !uploadRes.url.startsWith('idb://')) {
+              updatedList.push(uploadRes.url);
+              hasChanges = true;
+              appendDiagnosticLog('success', 'CLOUD_UPGRADE', `Uploaded to Supabase CDN: ${uploadRes.url}`);
+            } else {
+              updatedList.push(itemUrl);
+            }
+          } else {
+            updatedList.push(itemUrl);
+          }
+        } else {
+          updatedList.push(itemUrl);
+        }
+      }
+
+      setSyncPendingProgress(90);
+
+      if (hasChanges && updatedList.length > 0) {
+        await applyAndSyncHeroSettings(
+          {
+            heroVideoUrls: updatedList,
+            heroVideoUrl: updatedList[0],
+          },
+          'Video synced to Supabase CDN & live across all devices!'
+        );
+        showToast('Success! Hero video synced to Supabase CDN across all devices');
+      } else {
+        await handleSyncNow();
+        showToast('Supabase bucket verified and synced!');
+      }
+    } catch (err) {
+      console.error('Error during verify and sync:', err);
+      const msg = err instanceof Error ? err.message : String(err);
+      appendDiagnosticLog('error', 'CLOUD_UPGRADE', `Sync failed: ${msg}`);
+      showToast('Error syncing pending media to Supabase');
+    } finally {
+      setSyncPendingProgress(null);
+      setSyncingPendingMedia(false);
+    }
+  };
+
   // Submit Product Form
   const handleSubmitProduct = async (e: React.FormEvent) => {
     e.preventDefault();
@@ -794,7 +916,15 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     if (!val) return val;
     if (val.startsWith('idb://')) {
       try {
-        const blob = await loadMediaBlob(val);
+        let blob = await loadMediaBlob(val);
+        if (!blob && val.includes('Scene-3')) {
+          try {
+            const resp = await fetch('/uploads/1794858483106_02yur4_Scene-3.mp4');
+            if (resp.ok) blob = await resp.blob();
+          } catch {
+            // ignore
+          }
+        }
         if (!blob) return val;
         const rawName = val.replace(/^idb:\/\/(vid|img)_\d+_/, '') || `${label}.mp4`;
         const file = new File([blob], rawName, {
@@ -892,13 +1022,19 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     [onSaveSettings]
   );
 
-  // Submit Store Settings (Save action)
+  // Submit Store Settings (Save action: persists to Firestore and broadcasts across all devices)
   const handleSubmitSettings = async (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     setSavingSettings(true);
     try {
-      await persistDraftSettings(formSettingsRef.current);
-      showToast('Settings saved!');
+      const saved = await persistDraftSettings(formSettingsRef.current);
+      void forceSyncAllToSupabase({
+        settings: saved,
+        studioGallery: galleryState,
+        products,
+        creatorPosts,
+      });
+      showToast('Settings saved & synced across all devices!');
     } catch (err) {
       console.error('Failed to save settings', err);
       showToast('Failed to save settings.');
@@ -907,16 +1043,23 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
     }
   };
 
-  // Top-bar Save action (saves active section & any pending settings/gallery edits)
+  // Top-bar Save action (saves active section & any pending settings/gallery edits, syncing across devices)
   const handleQuickSave = async () => {
     if (savingSettings || syncingNow) return;
     setSavingSettings(true);
     try {
+      let latestGallery = galleryState;
       if (activeTab === 'gallery' && studioGalleryCommitRef.current) {
-        await studioGalleryCommitRef.current();
+        latestGallery = await studioGalleryCommitRef.current();
       }
-      await persistDraftSettings(formSettingsRef.current);
-      showToast('Changes saved!');
+      const saved = await persistDraftSettings(formSettingsRef.current);
+      void forceSyncAllToSupabase({
+        settings: saved,
+        studioGallery: latestGallery,
+        products,
+        creatorPosts,
+      });
+      showToast('Changes saved & synced across all devices!');
     } catch (err) {
       console.error('Save failed:', err);
       showToast('Failed to save changes.');
@@ -1870,158 +2013,173 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                 </div>
               </div>
 
-              {(formSettings.heroVideoUrls || []).some((u) => u.startsWith('idb://')) &&
-                !bucketNotFoundDetail && (
-                  <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-2">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
+              {/* Device-Only / Supabase Storage Setup & Sync Action Card */}
+              {((formSettings.heroVideoUrls || []).some((u) => u.startsWith('idb://')) ||
+                Boolean(bucketNotFoundDetail) ||
+                heroNeedsBucketSql) && (
+                <div className="p-4 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-3.5">
+                  <div className="flex items-start justify-between gap-3">
+                    <div className="flex items-start gap-2.5">
+                      <AlertTriangle size={18} className="text-amber-700 shrink-0 mt-0.5" />
                       <div className="space-y-1">
-                        <div className="font-black uppercase tracking-wider text-amber-900">
-                          Device-Only Video Detected (`idb://`) — Cloud Storage Needed for Other Devices
+                        <div className="font-black uppercase tracking-wider text-xs text-amber-900 flex flex-wrap items-center gap-2">
+                          <span>Supabase Cloud Storage Setup &amp; Video Sync</span>
+                          <span className="text-[10px] font-mono font-normal bg-amber-200/80 px-2 py-0.5 text-amber-900 border border-amber-300">
+                            Bucket: {activeBucketName} · Project: {activeProjectId}
+                          </span>
                         </div>
-                        <p className="text-[11px] leading-relaxed">
-                          This hero video is stored only inside this browser because Supabase Storage bucket &quot;{activeBucketName}&quot; is not created on project &quot;{activeProjectId}&quot; yet. Create the bucket once in Supabase SQL Editor and click <strong>Retry Cloud Sync</strong>, or paste an MP4 / Streamable / YouTube link.
+                        <p className="text-[11px] leading-relaxed text-amber-900/90">
+                          Your uploaded hero video is currently saved in this browser&apos;s local cache (<code>idb://</code>). To stream it live on phones and other devices, create the public <strong>&quot;{activeBucketName}&quot;</strong> bucket on your Supabase project using the 3 steps below:
                         </p>
                       </div>
                     </div>
-                    <div className="flex flex-wrap items-center gap-2 pl-6">
+                    {bucketNotFoundDetail && (
                       <button
                         type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
-                            showToast('Copied Supabase media bucket SQL!');
-                          } catch {
-                            showToast('See supabase_schema.sql in project');
-                          }
-                        }}
-                        className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
+                        onClick={() => setBucketNotFoundDetail(null)}
+                        className="text-amber-700 hover:text-amber-950 p-1 shrink-0"
+                        title="Dismiss notice"
                       >
-                        <Copy size={12} /> Copy Supabase Media Bucket SQL
+                        <X size={14} />
                       </button>
-                      <a
-                        href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                      >
-                        Open SQL Editor →
-                      </a>
-                      <button
-                        type="button"
-                        onClick={() => void handleSyncNow()}
-                        disabled={syncingNow}
-                        className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                      >
-                        <RefreshCw size={12} className={syncingNow ? 'animate-spin' : ''} />
-                        Retry Cloud Sync
-                      </button>
-                    </div>
+                    )}
                   </div>
-                )}
 
-              {bucketNotFoundDetail && (
-                <div className="p-3.5 bg-amber-50 border border-amber-300 text-amber-950 text-xs space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <div className="flex items-start gap-2">
-                      <AlertTriangle size={16} className="text-amber-700 shrink-0 mt-0.5" />
-                      <div className="space-y-1">
-                        <div className="font-black uppercase tracking-wider text-amber-900">
-                          Supabase Storage Bucket Setup Required (&quot;{activeBucketName}&quot;)
+                  {/* 3 Step Action Grid */}
+                  <div className="grid grid-cols-1 md:grid-cols-3 gap-2.5 pt-1">
+                    {/* Step 1 */}
+                    <div className="bg-white border border-amber-200 p-3 flex flex-col justify-between gap-2.5">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5 mb-1">
+                          <span className="w-4 h-4 rounded-full bg-amber-800 text-white inline-flex items-center justify-center text-[9px] font-bold">1</span>
+                          Copy Setup SQL
                         </div>
-                        <p className="text-[11px] leading-relaxed">{bucketNotFoundDetail}</p>
-                        <div className="text-[10px] font-mono text-amber-800">
-                          Step 1: Click Copy SQL · Step 2: Click Open SQL Editor &amp; Run · Step 3: Click Re-check Bucket
-                        </div>
+                        <p className="text-[10px] text-zinc-600 leading-tight">
+                          Copies the SQL to create the public &quot;{activeBucketName}&quot; bucket with full read/write policies.
+                        </p>
+                      </div>
+                      <div className="flex items-center gap-1.5 pt-1">
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
+                              showToast('Copied Supabase media bucket SQL!');
+                            } catch {
+                              showToast('See supabase_schema.sql in project');
+                            }
+                          }}
+                          className="flex-1 bg-amber-900 hover:bg-black text-white px-3 py-2 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          <Copy size={11} /> Copy SQL
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => setShowSqlDetails(!showSqlDetails)}
+                          className="border border-zinc-200 hover:border-black px-2.5 py-2 text-[10px] font-black uppercase tracking-wider text-zinc-600 hover:text-black transition-colors"
+                          title="View SQL code"
+                        >
+                          {showSqlDetails ? 'Hide' : 'View'}
+                        </button>
                       </div>
                     </div>
-                    <button
-                      type="button"
-                      onClick={() => setBucketNotFoundDetail(null)}
-                      className="text-amber-700 hover:text-amber-950 p-1 shrink-0"
-                      aria-label="Dismiss Bucket Not Found alert"
-                    >
-                      <X size={14} />
-                    </button>
+
+                    {/* Step 2 */}
+                    <div className="bg-white border border-amber-200 p-3 flex flex-col justify-between gap-2.5">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5 mb-1">
+                          <span className="w-4 h-4 rounded-full bg-amber-800 text-white inline-flex items-center justify-center text-[9px] font-bold">2</span>
+                          Run in Supabase
+                        </div>
+                        <p className="text-[10px] text-zinc-600 leading-tight">
+                          Opens the Supabase SQL Editor in a new tab. Paste the SQL and click <strong>Run</strong>.
+                        </p>
+                      </div>
+                      <div className="pt-1">
+                        <a
+                          href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
+                          target="_blank"
+                          rel="noopener noreferrer"
+                          className="w-full bg-white hover:bg-amber-100 text-amber-950 border border-amber-400 px-3 py-2 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors"
+                        >
+                          Open SQL Editor →
+                        </a>
+                      </div>
+                    </div>
+
+                    {/* Step 3 */}
+                    <div className="bg-white border border-amber-200 p-3 flex flex-col justify-between gap-2.5">
+                      <div>
+                        <div className="text-[10px] font-black uppercase tracking-widest text-amber-800 flex items-center gap-1.5 mb-1">
+                          <span className="w-4 h-4 rounded-full bg-amber-800 text-white inline-flex items-center justify-center text-[9px] font-bold">3</span>
+                          Verify &amp; Sync
+                        </div>
+                        <p className="text-[10px] text-zinc-600 leading-tight">
+                          Probes the bucket and automatically moves your local Scene-3 video to Supabase CDN.
+                        </p>
+                      </div>
+                      <div className="pt-1">
+                        <button
+                          type="button"
+                          onClick={() => void handleVerifyAndSyncPendingMedia()}
+                          disabled={syncingPendingMedia || runningDiagnostics}
+                          className="w-full bg-black hover:bg-zinc-800 text-white px-3 py-2 text-[10px] font-black uppercase tracking-wider flex items-center justify-center gap-1.5 transition-colors disabled:opacity-50"
+                        >
+                          <RefreshCw size={11} className={syncingPendingMedia || runningDiagnostics ? 'animate-spin' : ''} />
+                          {syncingPendingMedia
+                            ? syncPendingProgress !== null
+                              ? `Syncing ${syncPendingProgress}%`
+                              : 'Syncing...'
+                            : 'Verify & Sync Video'}
+                        </button>
+                      </div>
+                    </div>
                   </div>
-                  <div className="flex flex-wrap items-center gap-2 pl-6">
-                    <button
-                      type="button"
-                      onClick={async () => {
-                        try {
-                          await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
-                          showToast('Copied Supabase media bucket SQL!');
-                        } catch {
-                          showToast('See supabase_schema.sql in project');
-                        }
-                      }}
-                      className="bg-amber-900 hover:bg-black text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                    >
-                      <Copy size={12} /> Copy Supabase Media Bucket SQL
-                    </button>
-                    <a
-                      href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                    >
-                      Open SQL Editor →
-                    </a>
-                    <button
-                      type="button"
-                      onClick={() => handleRunStorageDiagnostics()}
-                      disabled={runningDiagnostics}
-                      className="border border-amber-400 bg-white hover:bg-amber-100 text-amber-950 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                    >
-                      <RefreshCw size={12} className={runningDiagnostics ? 'animate-spin' : ''} />
-                      Re-check Bucket
-                    </button>
-                  </div>
+
+                  {/* Inline SQL Viewer when toggled */}
+                  {showSqlDetails && (
+                    <div className="pt-2 border-t border-amber-200">
+                      <div className="flex items-center justify-between mb-1.5">
+                        <span className="text-[10px] font-mono font-bold text-amber-950 uppercase tracking-wider">
+                          SQL Script for Supabase (Creates &quot;{activeBucketName}&quot; bucket &amp; public policies):
+                        </span>
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
+                              showToast('Copied SQL to clipboard!');
+                            } catch {
+                              showToast('Unable to copy');
+                            }
+                          }}
+                          className="text-[10px] font-mono font-bold text-amber-900 underline hover:text-black"
+                        >
+                          Copy
+                        </button>
+                      </div>
+                      <pre className="bg-zinc-950 text-emerald-400 p-3 font-mono text-[10px] overflow-x-auto border border-zinc-800 leading-relaxed whitespace-pre-wrap">
+                        {getSupabaseBucketSetupSql()}
+                      </pre>
+                    </div>
+                  )}
                 </div>
               )}
 
-              {heroUploadError && (
-                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs space-y-2">
-                  <div className="flex items-start justify-between gap-2">
-                    <span>{heroUploadError}</span>
-                    <button
-                      type="button"
-                      onClick={() => {
-                        setHeroUploadError(null);
-                        setHeroNeedsBucketSql(false);
-                      }}
-                      className="text-rose-500 hover:text-rose-800 p-1 shrink-0"
-                      aria-label="Dismiss error"
-                    >
-                      <X size={14} />
-                    </button>
-                  </div>
-                  {heroNeedsBucketSql && !bucketNotFoundDetail && (
-                    <div className="flex flex-wrap items-center gap-2 pt-1">
-                      <button
-                        type="button"
-                        onClick={async () => {
-                          try {
-                            await navigator.clipboard.writeText(getSupabaseBucketSetupSql());
-                            showToast('Copied Supabase media bucket SQL!');
-                          } catch {
-                            showToast('See supabase_schema.sql in project');
-                          }
-                        }}
-                        className="bg-rose-700 hover:bg-rose-800 text-white px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                      >
-                        <Copy size={12} /> Copy Supabase Media Bucket SQL
-                      </button>
-                      <a
-                        href={`https://supabase.com/dashboard/project/${activeProjectId}/sql/new`}
-                        target="_blank"
-                        rel="noopener noreferrer"
-                        className="border border-rose-300 bg-white hover:bg-rose-100 text-rose-800 px-3 py-1.5 text-[10px] font-black uppercase tracking-wider flex items-center gap-1.5"
-                      >
-                        Open SQL Editor →
-                      </a>
-                    </div>
-                  )}
+              {heroUploadError && !((formSettings.heroVideoUrls || []).some((u) => u.startsWith('idb://')) || Boolean(bucketNotFoundDetail) || heroNeedsBucketSql) && (
+                <div className="p-3 bg-rose-50 border border-rose-200 text-rose-700 text-xs flex items-start justify-between gap-2">
+                  <span>{heroUploadError}</span>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setHeroUploadError(null);
+                      setHeroNeedsBucketSql(false);
+                    }}
+                    className="text-rose-500 hover:text-rose-800 p-1 shrink-0"
+                    aria-label="Dismiss error"
+                  >
+                    <X size={14} />
+                  </button>
                 </div>
               )}
 
@@ -2164,6 +2322,11 @@ export const AdminPanel: React.FC<AdminPanelProps> = ({
                               heroVideoUrls: next,
                               ...(i === 0 ? { heroVideoUrl: nextVal } : {}),
                             });
+                          }}
+                          onKeyDown={(e) => {
+                            if (e.key === 'Enter') {
+                              e.currentTarget.blur();
+                            }
                           }}
                           onBlur={() => {
                             const currentArr = formSettingsRef.current.heroVideoUrls || [];

@@ -54,7 +54,7 @@ export interface SupabaseStorageDiagnosticReport {
 const VIDEO_EXT_RE = /\.(mp4|mov|m4v|webm|ogv|ogg|3gp|3g2|mkv|avi)$/i;
 const IMAGE_EXT_RE = /\.(jpe?g|png|webp|gif|svg|avif|bmp|heic|heif)$/i;
 const SUPABASE_MAX_OBJECT_BYTES = 48 * 1024 * 1024; // Supabase Free tier limit is 50MB
-const CHUNK_UPLOAD_THRESHOLD = 3 * 1024 * 1024; // 3MB
+const CHUNK_UPLOAD_THRESHOLD = 25 * 1024 * 1024; // 25MB single-request fast path (under Cloud Run 32MB limit)
 const DEFAULT_CHUNK_BYTES = 2 * 1024 * 1024; // 2MB chunks stay safely under Cloud Run's 32MiB limit
 
 let cachedBucketStatus: { exists: boolean; checkedAt: number; lastError?: string } | null = null;
@@ -1082,7 +1082,7 @@ function postLocalBrowserSync(topic: BroadcastTopic, payloadObj: Record<string, 
   }
 }
 
-async function emitRealtimeBroadcast(topic: BroadcastTopic, data?: unknown): Promise<boolean> {
+export async function emitRealtimeBroadcast(topic: BroadcastTopic, data?: unknown): Promise<boolean> {
   const payloadObj: Record<string, unknown> = {
     originId: REALTIME_TAB_ID,
     updatedAt: Date.now(),
